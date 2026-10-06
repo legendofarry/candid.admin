@@ -4,7 +4,6 @@ import { resolve } from "node:path";
 import dotenv from "dotenv";
 import express from "express";
 import { cert, getApps, initializeApp } from "firebase-admin/app";
-import { getAuth } from "firebase-admin/auth";
 import { FieldValue, getFirestore } from "firebase-admin/firestore";
 
 dotenv.config({ path: resolve(process.cwd(), ".env.local") });
@@ -21,30 +20,6 @@ app.use((req, res, next) => {
   next();
 });
 app.use(express.json({ limit: "64kb" }));
-
-app.use("/api/owner", async (req, res, next) => {
-  const ownerEmail = String(process.env.OWNER_EMAIL || "").trim().toLowerCase();
-  if (!ownerEmail) {
-    return res.status(503).json({ error: "Owner access is not configured. Set OWNER_EMAIL on the server." });
-  }
-  const token = /^Bearer\s+(.+)$/i.exec(req.get("authorization") || "")?.[1];
-  if (!token) return res.status(401).json({ error: "Sign in to the owner console." });
-  try {
-    db();
-    const identity = await getAuth().verifyIdToken(token);
-    if (!identity.email || identity.email.toLowerCase() !== ownerEmail || identity.email_verified !== true) {
-      return res.status(403).json({ error: "This Firebase account is not authorized for the owner console." });
-    }
-    req.ownerIdentity = identity;
-    return next();
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "";
-    if (message.includes("FIREBASE_SERVICE_ACCOUNT_JSON") || message.includes("service-account file")) {
-      return next(error);
-    }
-    return res.status(401).json({ error: "Your session is invalid or expired. Sign in again." });
-  }
-});
 
 function db() {
   if (firestore) return firestore;
@@ -106,10 +81,6 @@ async function audit(action, targetType = null, targetId = null, payload = null)
 }
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
-
-app.get("/api/owner/session", (req, res) => {
-  res.json({ email: req.ownerIdentity.email });
-});
 
 app.get("/api/owner/stats", async (_req, res) => {
   const [stories, companies, users, comments, reports, salaries, ratings] = await Promise.all([

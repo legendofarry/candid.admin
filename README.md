@@ -5,10 +5,9 @@ The owner console connects directly to the same Firestore database used by the C
 ## Local setup
 
 1. Copy `.env.example` to `.env.local`.
-2. Set `FIREBASE_SERVICE_ACCOUNT_JSON` to the service-account JSON for the same Firebase project as the Candid main app. Set `OWNER_EMAIL` to the verified Firebase Auth email authorized to use this console. Set `VITE_FIREBASE_API_KEY` to that Firebase project's web API key.
-3. Enable Email/Password sign-in in Firebase Authentication and verify the owner account's email.
+2. Set `FIREBASE_SERVICE_ACCOUNT_JSON` to the service-account JSON for the same Firebase project as the Candid main app.
 4. Run `npm install`, then `npm run dev`.
-5. Open `http://127.0.0.1:4174` and sign in with the authorized Firebase account.
+5. Open `http://127.0.0.1:4174` to use the console directly.
 
 Vite serves the console on `127.0.0.1:4174` and proxies `/api/owner` to the local Node server on `127.0.0.1:4176`. The server binds to loopback and keeps Firebase credentials off the browser.
 
@@ -21,10 +20,7 @@ The repository includes `netlify.toml` and a Netlify Function for the owner API.
 In the **owner console's Netlify site** settings, add these environment variables:
 
 - `FIREBASE_SERVICE_ACCOUNT_JSON`: the full service-account JSON for the main app's Firebase project. Scope it to Functions.
-- `OWNER_EMAIL`: the exact verified Firebase Auth email allowed to use the console. Scope it to Functions.
-- `VITE_FIREBASE_API_KEY`: the Firebase project's web API key. It is public and used by the sign-in form; scope it to Builds.
-
-Enable Email/Password sign-in in Firebase Authentication, verify the owner email, and redeploy after setting the variables. The function rejects requests without a valid Firebase ID token from the allowlisted verified email. Keep the Firebase service-account JSON out of `VITE_*` variables and browser code.
+The console opens without a sign-in screen. Every owner API endpoint is also unauthenticated, so anyone who can reach the Netlify URL can read and change the connected app's data. Keep the Netlify site private and share its URL only with trusted people. Keep the Firebase service-account JSON out of `VITE_*` variables and browser code.
 
 ## Included workflows
 

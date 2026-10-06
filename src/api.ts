@@ -130,117 +130,13 @@ export type OwnerInboxDetail = {
 
 const apiRoot = "/api/owner";
 
-type OwnerSession = { idToken: string; refreshToken: string; expiresAt: number };
-
-const authApiKey = import.meta.env.VITE_FIREBASE_API_KEY;
-const authSessionKey = "candid-owner-auth-session";
-
-function storedSession(): OwnerSession | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const value = sessionStorage.getItem(authSessionKey);
-    return value ? (JSON.parse(value) as OwnerSession) : null;
-  } catch {
-    return null;
-  }
-}
-
-function saveSession(session: OwnerSession | null) {
-  if (typeof window === "undefined") return;
-  if (session) sessionStorage.setItem(authSessionKey, JSON.stringify(session));
-  else sessionStorage.removeItem(authSessionKey);
-}
-
-export function hasOwnerSession() {
-  return Boolean(storedSession()?.refreshToken);
-}
-
-export function clearOwnerSession() {
-  saveSession(null);
-}
-
-export async function signInOwner(email: string, password: string) {
-  if (!authApiKey) throw new Error("Add VITE_FIREBASE_API_KEY to the owner app environment first.");
-  const response = await fetch(
-    `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${encodeURIComponent(authApiKey)}`,
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ email, password, returnSecureToken: true }),
-    },
-  );
-  const result = (await response.json().catch(() => ({}))) as {
-    idToken?: string;
-    refreshToken?: string;
-    expiresIn?: string;
-    error?: { message?: string };
-  };
-  if (!response.ok || !result.idToken || !result.refreshToken) {
-    const code = result.error?.message;
-    const message = code === "INVALID_LOGIN_CREDENTIALS" || code === "EMAIL_NOT_FOUND" || code === "INVALID_PASSWORD"
-      ? "Email or password is incorrect."
-      : code === "USER_DISABLED"
-        ? "This account is disabled."
-        : code === "OPERATION_NOT_ALLOWED"
-          ? "Enable Email/Password sign-in for Firebase Authentication."
-          : "Could not sign in. Check the Firebase Authentication settings and try again.";
-    throw new Error(message);
-  }
-  const session = {
-    idToken: result.idToken,
-    refreshToken: result.refreshToken,
-    expiresAt: Date.now() + Number(result.expiresIn || 3600) * 1000,
-  };
-  saveSession(session);
-  return session;
-}
-
-async function freshIdToken() {
-  const session = storedSession();
-  if (!session?.refreshToken) throw new Error("Sign in to the owner console.");
-  if (session.expiresAt > Date.now() + 60_000) return session.idToken;
-  if (!authApiKey) throw new Error("Firebase Authentication is not configured for this site.");
-  const response = await fetch(
-    `https://securetoken.googleapis.com/v1/token?key=${encodeURIComponent(authApiKey)}`,
-    {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: session.refreshToken }),
-    },
-  );
-  const result = (await response.json().catch(() => ({}))) as {
-    id_token?: string;
-    refresh_token?: string;
-    expires_in?: string;
-  };
-  if (!response.ok || !result.id_token || !result.refresh_token) {
-    clearOwnerSession();
-    throw new Error("Your session expired. Sign in again.");
-  }
-  const refreshed = {
-    idToken: result.id_token,
-    refreshToken: result.refresh_token,
-    expiresAt: Date.now() + Number(result.expires_in || 3600) * 1000,
-  };
-  saveSession(refreshed);
-  return refreshed.idToken;
-}
-
 export async function ownerRequest<T>(
   path: string,
   options: RequestInit = {},
 ): Promise<T> {
-  async function send(token: string) {
-    const headers = new Headers(options.headers);
-    headers.set("authorization", `Bearer ${token}`);
-    if (options.body && !headers.has("content-type")) headers.set("content-type", "application/json");
-    return fetch(`${apiRoot}${path}`, { ...options, headers });
-  }
-  let response = await send(await freshIdToken());
-  if (response.status === 401) {
-    clearOwnerSession();
-    throw new Error("Your session expired or is not authorized. Sign in again.");
-  }
+  const headers = new Headers(options.headers);
+  if (options.body && !headers.has("content-type")) headers.set("content-type", "application/json");
+  const response = await fetch(`${apiRoot}${path}`, { ...options, headers });
   const payload = (await response.json().catch(() => ({}))) as T | { error?: string };
   if (!response.ok) {
     const message = (payload as { error?: string }).error;

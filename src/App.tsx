@@ -16,8 +16,6 @@ import {
   Inbox,
   LayoutDashboard,
   LifeBuoy,
-  LogOut,
-  LockKeyhole,
   Mail,
   MessageSquareText,
   MessagesSquare,
@@ -31,11 +29,8 @@ import {
   X,
 } from "lucide-react";
 import {
-  clearOwnerSession,
-  hasOwnerSession,
   ownerRequest,
   postOwnerAction,
-  signInOwner,
   type AuditEntry,
   type OwnerComment,
   type OwnerCompany,
@@ -114,90 +109,10 @@ function useDebouncedValue(value: string, delay = 250) {
 }
 
 export function App() {
-  const [authState, setAuthState] = useState<"checking" | "signed-out" | "signed-in">("checking");
-  const [authBusy, setAuthBusy] = useState(false);
-  const [authError, setAuthError] = useState("");
-
-  useEffect(() => {
-    let active = true;
-    if (!hasOwnerSession()) {
-      setAuthState("signed-out");
-      return () => { active = false; };
-    }
-    void ownerRequest<{ email: string }>("/session")
-      .then(() => { if (active) setAuthState("signed-in"); })
-      .catch((error: unknown) => {
-        clearOwnerSession();
-        if (!active) return;
-        setAuthError(error instanceof Error ? error.message : "Sign in to continue.");
-        setAuthState("signed-out");
-      });
-    return () => { active = false; };
-  }, []);
-
-  async function handleSignIn(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    const email = String(form.get("email") || "").trim();
-    const password = String(form.get("password") || "");
-    setAuthBusy(true);
-    setAuthError("");
-    try {
-      await signInOwner(email, password);
-      await ownerRequest<{ email: string }>("/session");
-      setAuthState("signed-in");
-    } catch (error) {
-      clearOwnerSession();
-      setAuthError(error instanceof Error ? error.message : "Sign in failed.");
-    } finally {
-      setAuthBusy(false);
-    }
-  }
-
-  if (authState === "checking") {
-    return <div className="boot-screen"><span className="loader" />Checking owner access…</div>;
-  }
-  if (authState === "signed-out") {
-    return <OwnerLogin busy={authBusy} error={authError} onSubmit={handleSignIn} />;
-  }
-  return <OwnerConsole onSignOut={() => { clearOwnerSession(); setAuthState("signed-out"); }} />;
+  return <OwnerConsole />;
 }
 
-function OwnerLogin({
-  busy,
-  error,
-  onSubmit,
-}: {
-  busy: boolean;
-  error: string;
-  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
-}) {
-  return (
-    <main className="login-screen">
-      <section className="login-panel">
-        <div className="login-brand">
-          <span className="brand-mark"><Flame size={19} /></span>
-          <span>Candid <span>Owner console</span></span>
-        </div>
-        <span className="login-icon"><LockKeyhole size={21} /></span>
-        <h1>Owner sign in</h1>
-        <p className="login-copy">Sign in with the verified Firebase account authorized for this console.</p>
-        <form className="login-form" onSubmit={onSubmit}>
-          <label htmlFor="owner-email">Email</label>
-          <div className="password-field"><input id="owner-email" name="email" type="email" autoComplete="username" required /></div>
-          <label htmlFor="owner-password">Password</label>
-          <div className="password-field"><input id="owner-password" name="password" type="password" autoComplete="current-password" required /></div>
-          {error ? <p className="form-error" role="alert">{error}</p> : null}
-          <button className="primary-button" disabled={busy}><LockKeyhole size={15} />{busy ? "Signing in…" : "Sign in securely"}</button>
-        </form>
-        <p className="session-note"><LockKeyhole size={14} /> Only the configured, verified owner email can access member data.</p>
-      </section>
-      <div className="login-footer">CANDID <span>•</span> PRIVATE OWNER WORKSPACE</div>
-    </main>
-  );
-}
-
-function OwnerConsole({ onSignOut }: { onSignOut: () => void }) {
+function OwnerConsole() {
   const [section, setSection] = useState<Section>("overview");
   const [revision, setRevision] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -293,9 +208,6 @@ function OwnerConsole({ onSignOut }: { onSignOut: () => void }) {
           <div className="connection-state">
             <span className="live-dot" /> Owner API connected
           </div>
-          <button type="button" className="signout-link" onClick={onSignOut}>
-            <LogOut size={15} /> Sign out
-          </button>
         </div>
       </aside>
 
@@ -307,9 +219,7 @@ function OwnerConsole({ onSignOut }: { onSignOut: () => void }) {
             <strong>{current.label}</strong>
           </div>
           <div className="top-actions">
-            <span className="secure-label">
-              <LockKeyhole size={14} /> Private workspace
-            </span>
+            <span className="secure-label">Owner workspace</span>
             <button
               className="icon-button"
               title="Refresh data"
