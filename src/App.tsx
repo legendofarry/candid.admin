@@ -115,6 +115,7 @@ export function App() {
 function OwnerConsole() {
   const [section, setSection] = useState<Section>("overview");
   const [revision, setRevision] = useState(0);
+  const [inboxThreadToOpen, setInboxThreadToOpen] = useState("");
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState("");
   const stats = useOwnerData<OwnerStats>("/stats", revision);
@@ -146,7 +147,7 @@ function OwnerConsole() {
           />
         );
       case "inbox":
-        return <InboxView revision={revision} />;
+        return <InboxView revision={revision} initialThreadId={inboxThreadToOpen} />;
       case "stories":
         return <StoriesView {...shared} />;
       case "reports":
@@ -156,7 +157,10 @@ function OwnerConsole() {
       case "companies":
         return <CompaniesView {...shared} />;
       case "people":
-        return <PeopleView {...shared} />;
+        return <PeopleView {...shared} onOpenConversation={(id) => {
+          setInboxThreadToOpen(id);
+          setSection("inbox");
+        }} />;
       case "contact":
         return <ContactView {...shared} />;
       case "audit":
@@ -254,7 +258,7 @@ function inboxKey(thread: OwnerInboxThread) {
   return `${thread.kind}:${thread.id}`;
 }
 
-function InboxView({ revision }: { revision: number }) {
+function InboxView({ revision, initialThreadId = "" }: { revision: number; initialThreadId?: string }) {
   const [channel, setChannel] = useState<"direct" | "support">("direct");
   const [selectedKey, setSelectedKey] = useState("");
   const [localRevision, setLocalRevision] = useState(0);
@@ -276,6 +280,13 @@ function InboxView({ revision }: { revision: number }) {
     setSelectedKey("");
     setDraft("");
   }, [channel]);
+
+  useEffect(() => {
+    if (initialThreadId) {
+      setChannel("direct");
+      setSelectedKey(`direct:${initialThreadId}`);
+    }
+  }, [initialThreadId]);
 
   useEffect(() => {
     if (list.loading || !list.data) return;
@@ -1217,10 +1228,17 @@ function CompaniesView({ revision, runAction, busy }: ViewProps) {
   );
 }
 
-function PeopleView({ revision, runAction, busy }: ViewProps) {
+function PeopleView({
+  revision,
+  runAction,
+  busy,
+  onOpenConversation,
+}: ViewProps & { onOpenConversation: (id: string) => void }) {
   const [page, setPage] = useState(0);
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState("");
+  const [messaging, setMessaging] = useState(false);
+  const [messageError, setMessageError] = useState("");
   const search = useDebouncedValue(query);
   const path = `/users?limit=${PAGE_SIZE}&offset=${page * PAGE_SIZE}${search ? `&q=${encodeURIComponent(search)}` : ""}`;
   const { data, loading, error } = useOwnerData<{ total: number; users: OwnerUser[] }>(
@@ -1230,6 +1248,23 @@ function PeopleView({ revision, runAction, busy }: ViewProps) {
   const people = data?.users ?? [];
   const selected = people.find((person) => person.id === selectedId) ?? people[0];
   useEffect(() => setPage(0), [search]);
+
+  async function startConversation() {
+    if (!selected || selected.banned || messaging) return;
+    setMessaging(true);
+    setMessageError("");
+    try {
+      const conversation = await ownerRequest<{ id: string }>("/inbox/direct-start", {
+        method: "POST",
+        body: JSON.stringify({ user_id: selected.id }),
+      });
+      onOpenConversation(conversation.id);
+    } catch (error) {
+      setMessageError(error instanceof Error ? error.message : "Could not start a Candid conversation.");
+    } finally {
+      setMessaging(false);
+    }
+  }
   return (
     <>
       <PageHeading
@@ -1306,6 +1341,14 @@ function PeopleView({ revision, runAction, busy }: ViewProps) {
               <Fact label="Joined" value={formatDateTime(selected.created_at)} />
               <Fact label="Status" value={selected.banned ? "Restricted" : "Active"} />
             </div>
+            {messageError ? <p className="form-error" role="alert">{messageError}</p> : null}
+            <button
+              className="primary-button wide-button"
+              disabled={selected.banned || messaging}
+              onClick={() => void startConversation()}
+            >
+              <MessageSquareText size={15} /> {messaging ? "Opening conversation…" : "Message as Candid"}
+            </button>
             {selected.banned ? (
               <button
                 className="primary-button wide-button"
