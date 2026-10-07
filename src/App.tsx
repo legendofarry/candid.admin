@@ -41,6 +41,7 @@ import {
   type OwnerReport,
   type OwnerStats,
   type OwnerUser,
+  type OwnerVerificationReview,
   type SiteContact,
   type Story,
   type StoryStatus,
@@ -836,6 +837,7 @@ function StoriesView({ revision, runAction, busy }: ViewProps) {
 }
 
 function AIReviewView({ revision, runAction, busy }: ViewProps) {
+  const [reviewType, setReviewType] = useState<"stories" | "accounts">("stories");
   const [decision, setDecision] = useState<"important_review" | "auto_approved">("important_review");
   const [page, setPage] = useState(0);
   const [selectedId, setSelectedId] = useState("");
@@ -850,6 +852,10 @@ function AIReviewView({ revision, runAction, busy }: ViewProps) {
   useEffect(() => setPage(0), [decision]);
   useEffect(() => setSelectedId(""), [decision]);
 
+  if (reviewType === "accounts") {
+    return <AccountReviewView revision={revision} runAction={runAction} busy={busy} onBack={() => setReviewType("stories")} />;
+  }
+
   return (
     <>
       <PageHeading
@@ -857,6 +863,10 @@ function AIReviewView({ revision, runAction, busy }: ViewProps) {
         title="AI decisions"
         description="Routine, low-risk stories are published automatically. Unclear or high-risk cases wait here for your decision."
       />
+      <div className="toolbar-row ai-review-tabs" role="tablist" aria-label="Review type">
+        <button className="is-selected" role="tab" aria-selected="true">Story review</button>
+        <button role="tab" aria-selected="false" onClick={() => setReviewType("accounts")}>New account approvals</button>
+      </div>
       <div className="ai-review-disclosure">
         <Sparkles size={17} />
         <span>
@@ -991,6 +1001,48 @@ function AIReviewView({ revision, runAction, busy }: ViewProps) {
       </div>
     </>
   );
+}
+
+function AccountReviewView({ revision, runAction, busy, onBack }: ViewProps & { onBack: () => void }) {
+  const [status, setStatus] = useState<"pending_review" | "approved" | "declined">("pending_review");
+  const [selectedId, setSelectedId] = useState("");
+  const { data, loading, error } = useOwnerData<{
+    total: number;
+    totals: { pending: number; approved: number; declined: number };
+    reviews: OwnerVerificationReview[];
+  }>(`/account-reviews?status=${status}&limit=${PAGE_SIZE}&offset=0`, revision);
+  const reviews = data?.reviews ?? [];
+  const selected = reviews.find((review) => review.id === selectedId) ?? reviews[0];
+  useEffect(() => setSelectedId(""), [status]);
+
+  return <>
+    <PageHeading eyebrow="MODERATION / INTELLIGENCE" title="New account approvals" description="AI checks each member’s request for a company badge. Clear, high-confidence matches can be approved automatically; uncertain cases wait here for your decision." />
+    <div className="toolbar-row ai-review-tabs" role="tablist" aria-label="Review type">
+      <button role="tab" aria-selected="false" onClick={onBack}>Story review</button>
+      <button className="is-selected" role="tab" aria-selected="true">New account approvals <span>{data?.totals.pending ?? 0}</span></button>
+    </div>
+    <div className="toolbar-row ai-review-tabs" role="tablist" aria-label="Account review status">
+      {(["pending_review", "approved", "declined"] as const).map((value) => <button key={value} className={status === value ? "is-selected" : ""} role="tab" aria-selected={status === value} onClick={() => setStatus(value)}>{value === "pending_review" ? "Needs your review" : value === "approved" ? "Approved" : "Declined"}<span>{value === "pending_review" ? data?.totals.pending ?? 0 : value === "approved" ? data?.totals.approved ?? 0 : data?.totals.declined ?? 0}</span></button>)}
+    </div>
+    {error ? <LoadError message={error} /> : null}
+    <div className="master-detail">
+      <div className="list-column"><section className="surface-panel record-list">
+        {loading && !data ? <LoadingRows /> : reviews.length ? reviews.map((review) => <button key={review.id} className={`record-row ${selected?.id === review.id ? "selected" : ""}`} onClick={() => setSelectedId(review.id)}>
+          <span className="avatar-small">{(review.profile?.handle || "U").slice(0, 1).toUpperCase()}</span>
+          <span className="record-row-main"><span className="record-title">{review.profile?.username ? `@${review.profile.username}` : review.profile?.handle || review.user_id}</span><span className="record-subtitle">{review.verification?.company_name || "Company not matched"} · {review.risk_level} risk · {Math.round(review.confidence * 100)}% confidence</span><span className="record-excerpt">{review.summary}</span></span>
+          <StatusBadge value={review.status === "pending_review" ? "review" : review.status} />
+        </button>) : <EmptyState title={status === "pending_review" ? "No account approvals waiting" : `No ${status} requests`} detail="Member requests for official company badges will appear here after AI screening." />}
+      </section></div>
+      {selected ? <aside className="surface-panel inspector">
+        <div className="inspector-top"><span className="eyebrow">ACCOUNT APPROVAL · {selected.user_id.slice(0, 8)}</span><StatusBadge value={selected.status === "pending_review" ? "review" : selected.status} /></div>
+        <div className="profile-summary"><span className="profile-avatar">{(selected.profile?.handle || "U").slice(0, 1).toUpperCase()}</span><div><h2>{selected.profile?.username ? `@${selected.profile.username}` : selected.profile?.handle || "New member"}</h2><p className="inspector-meta">{selected.profile?.account_type || "Unknown account type"} · {selected.profile?.county || "County not set"}</p></div></div>
+        <div className="fact-list"><Fact label="Matched company" value={selected.verification?.company_name || "No known company match"} /><Fact label="Requested" value={formatDateTime(selected.requested_at)} /><Fact label="AI recommendation" value={`${selected.recommendation} · ${Math.round(selected.confidence * 100)}%`} /><Fact label="AI model" value={selected.model} /></div>
+        <div className="ai-decision-summary"><span className={`ai-risk risk-${selected.risk_level}`}>{selected.risk_level} risk</span><p>{selected.summary}</p></div>
+        {selected.flags.length ? <div className="ai-flag-list">{selected.flags.map((flag) => <span key={flag}>{flag}</span>)}</div> : null}
+        {selected.status === "pending_review" ? <div className="action-row ai-owner-actions"><button className="primary-button" disabled={busy} onClick={() => void runAction({ entity: "account_verification", id: selected.user_id, status: "approved" })}><Check size={15} /> Approve badge</button><button className="danger-button" disabled={busy} onClick={() => void runAction({ entity: "account_verification", id: selected.user_id, status: "declined" })}><X size={15} /> Decline</button></div> : null}
+      </aside> : null}
+    </div>
+  </>;
 }
 
 function EvidencePreview({ storyId, format }: { storyId: string; format: string }) {

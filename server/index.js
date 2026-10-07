@@ -84,10 +84,10 @@ async function audit(action, targetType = null, targetId = null, payload = null)
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
 app.get("/api/owner/stats", async (_req, res) => {
-  const [stories, companies, users, comments, reports, salaries, ratings, aiReviews] = await Promise.all([
+  const [stories, companies, users, comments, reports, salaries, ratings, aiReviews, accountReviews] = await Promise.all([
     collection("stories"), collection("companies"), collection("profiles"),
     collection("comments"), collection("reports"), collection("salary_reports"),
-    collection("company_ratings"), collection("story_ai_reviews"),
+    collection("company_ratings"), collection("story_ai_reviews"), collection("account_verification_reviews"),
   ]);
   const since = new Date(Date.now() - 7 * 86_400_000).toISOString();
   res.json({
@@ -105,7 +105,9 @@ app.get("/api/owner/stats", async (_req, res) => {
     salaryReports: salaries.length,
     companyRatings: ratings.length,
     intelligence: {
-      needsReview: aiReviews.filter((item) => item.decision === "important_review" && item.owner_reviewed !== true).length,
+      needsReview: aiReviews.filter((item) => item.decision === "important_review" && item.owner_reviewed !== true).length
+        + accountReviews.filter((item) => item.status === "pending_review").length,
+      accountApprovals: accountReviews.filter((item) => item.status === "pending_review").length,
       autoApproved: aiReviews.filter((item) => item.decision === "auto_approved").length,
     },
     generatedAt: new Date().toISOString(),
@@ -167,6 +169,33 @@ app.get("/api/owner/ai-reviews", async (req, res) => {
     totals: {
       important: reviews.filter((item) => item.decision === "important_review" && item.owner_reviewed !== true).length,
       autoApproved: reviews.filter((item) => item.decision === "auto_approved").length,
+    },
+    reviews: filtered.slice(offset, offset + limit),
+  });
+});
+
+app.get("/api/owner/account-reviews", async (req, res) => {
+  const { limit, offset } = pageParams(new URL(req.url, "http://owner.local"));
+  const status = String(req.query.status || "pending_review");
+  const [reviews, profiles, verifications] = await Promise.all([
+    collection("account_verification_reviews"), collection("profiles"), collection("account_verifications"),
+  ]);
+  const profileById = new Map(profiles.map((item) => [item.id, item]));
+  const verificationById = new Map(verifications.map((item) => [item.user_id || item.id, item]));
+  const filtered = reviews
+    .filter((item) => item.status === status)
+    .map((item) => ({
+      ...item,
+      profile: profileById.get(item.user_id || item.id) || null,
+      verification: verificationById.get(item.user_id || item.id) || null,
+    }))
+    .sort((a, b) => String(b.requested_at || "").localeCompare(String(a.requested_at || "")));
+  res.json({
+    total: filtered.length,
+    totals: {
+      pending: reviews.filter((item) => item.status === "pending_review").length,
+      approved: reviews.filter((item) => item.status === "approved").length,
+      declined: reviews.filter((item) => item.status === "declined").length,
     },
     reviews: filtered.slice(offset, offset + limit),
   });
@@ -764,6 +793,33 @@ app.post("/api/owner/actions", async (req, res) => {
     if (!(await document("profiles", input.id))) return res.status(404).json({ error: "User not found" });
     await database.collection("profiles").doc(input.id).update({ banned: input.banned });
     await audit(input.banned ? "user.banned" : "user.unbanned", "user", input.id);
+  } else if (input.entity === "account_verification" && ["approved", "declined"].includes(input.status)) {
+    const reviewRef = database.collection("account_verification_reviews").doc(input.id);
+    const reviewSnapshot = await reviewRef.get();
+    if (!reviewSnapshot.exists) return res.status(404).json({ error: "Verification request not found" });
+    if (reviewSnapshot.data()?.status !== "pending_review") return res.status(409).json({ error: "This request has already been reviewed" });
+    const approved = input.status === "approved";
+    const verificationRef = database.collection("account_verifications").doc(input.id);
+    const profileRef = database.collection("profiles").doc(input.id);
+    const batch = database.batch();
+    batch.set(reviewRef, {
+      status: input.status,
+      owner_outcome: input.status,
+      reviewed_at: timestamp,
+      reviewed_by: "owner",
+    }, { merge: true });
+    batch.set(verificationRef, {
+      approval_status: input.status,
+      owner_verified: approved,
+      badge_status: approved ? "claimed" : "none",
+      claimed_at: approved ? timestamp : null,
+    }, { merge: true });
+    batch.set(profileRef, { verified: approved }, { merge: true });
+    await batch.commit();
+    await audit(`account_verification.${input.status}`, "user", input.id, {
+      ai_recommendation: reviewSnapshot.data()?.recommendation || null,
+      ai_decision: reviewSnapshot.data()?.decision || null,
+    });
   } else if (input.entity === "company") {
     if (!(await document("companies", input.id))) return res.status(404).json({ error: "Company not found" });
     const patch = {};

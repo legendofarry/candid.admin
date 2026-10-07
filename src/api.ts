@@ -73,7 +73,7 @@ export type OwnerStats = {
   reportsOpen: number;
   salaryReports: number;
   companyRatings: number;
-  intelligence: { needsReview: number; autoApproved: number };
+  intelligence: { needsReview: number; autoApproved: number; accountApprovals?: number };
   generatedAt: string;
 };
 
@@ -101,6 +101,21 @@ export type AIReview = {
     file_bytes: number | null;
     has_file: boolean;
   } | null;
+};
+
+export type OwnerVerificationReview = {
+  id: string;
+  user_id: string;
+  status: "pending_review" | "approved" | "declined";
+  recommendation: "approve" | "review" | "decline";
+  confidence: number;
+  risk_level: "low" | "medium" | "high";
+  flags: string[];
+  summary: string;
+  model: string;
+  requested_at: string;
+  profile: Pick<OwnerUser, "id" | "handle" | "username" | "account_type" | "county" | "created_at"> | null;
+  verification: { company_name?: string | null; badge_status?: string; owner_verified?: boolean } | null;
 };
 
 export type SiteContact = {
