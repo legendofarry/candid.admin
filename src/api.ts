@@ -73,7 +73,34 @@ export type OwnerStats = {
   reportsOpen: number;
   salaryReports: number;
   companyRatings: number;
+  intelligence: { needsReview: number; autoApproved: number };
   generatedAt: string;
+};
+
+export type AIReview = {
+  id: string;
+  story_id: string;
+  decision: "auto_approved" | "important_review";
+  verdict: "approve" | "hold" | "reject";
+  confidence: number;
+  risk_level: "low" | "medium" | "high" | "critical";
+  risk_flags: string[];
+  summary: string;
+  concerns: { excerpt: string; reason: string }[];
+  evidence_assessment: string;
+  evidence_summary: string;
+  model: string;
+  automated: boolean;
+  owner_reviewed: boolean;
+  created_at: string;
+  story: Story;
+  evidence: {
+    note: string | null;
+    status: string | null;
+    file_format: string | null;
+    file_bytes: number | null;
+    has_file: boolean;
+  } | null;
 };
 
 export type SiteContact = {

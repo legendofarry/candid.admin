@@ -22,6 +22,7 @@ import {
   RefreshCw,
   Search,
   Send,
+  Sparkles,
   ShieldAlert,
   ShieldCheck,
   UserRound,
@@ -32,6 +33,7 @@ import {
   ownerRequest,
   postOwnerAction,
   type AuditEntry,
+  type AIReview,
   type OwnerComment,
   type OwnerCompany,
   type OwnerInboxDetail,
@@ -48,6 +50,7 @@ type Section =
   | "overview"
   | "inbox"
   | "stories"
+  | "intelligence"
   | "reports"
   | "comments"
   | "companies"
@@ -60,6 +63,7 @@ const navigation: { id: Section; label: string; icon: typeof LayoutDashboard; gr
   { id: "overview", label: "Overview", icon: LayoutDashboard, group: "Workspace" },
   { id: "inbox", label: "Inbox", icon: Inbox, group: "Workspace" },
   { id: "stories", label: "Stories", icon: FileText, group: "Moderation" },
+  { id: "intelligence", label: "AI review", icon: Sparkles, group: "Moderation" },
   { id: "reports", label: "Reports", icon: ShieldAlert, group: "Moderation" },
   { id: "comments", label: "Comments", icon: MessageSquareText, group: "Moderation" },
   { id: "companies", label: "Companies", icon: Building2, group: "Directory" },
@@ -150,6 +154,8 @@ function OwnerConsole() {
         return <InboxView revision={revision} initialThreadId={inboxThreadToOpen} />;
       case "stories":
         return <StoriesView {...shared} />;
+      case "intelligence":
+        return <AIReviewView {...shared} />;
       case "reports":
         return <ReportsView {...shared} />;
       case "comments":
@@ -202,6 +208,9 @@ function OwnerConsole() {
                   <span>{item.label}</span>
                   {item.id === "reports" && stats.data?.reportsOpen ? (
                     <span className="nav-count">{stats.data.reportsOpen}</span>
+                  ) : null}
+                  {item.id === "intelligence" && stats.data?.intelligence.needsReview ? (
+                    <span className="nav-count">{stats.data.intelligence.needsReview}</span>
                   ) : null}
                 </button>
               </div>
@@ -513,6 +522,14 @@ function Overview({
       action: "stories" as Section,
     },
     {
+      label: "AI held for you",
+      value: stats?.intelligence.needsReview,
+      icon: Sparkles,
+      delta: `${(stats?.intelligence.autoApproved ?? 0).toLocaleString()} auto-approved`,
+      tone: "cyan",
+      action: "intelligence" as Section,
+    },
+    {
       label: "Open reports",
       value: stats?.reportsOpen,
       icon: ShieldAlert,
@@ -815,6 +832,209 @@ function StoriesView({ revision, runAction, busy }: ViewProps) {
         ) : null}
       </div>
     </>
+  );
+}
+
+function AIReviewView({ revision, runAction, busy }: ViewProps) {
+  const [decision, setDecision] = useState<"important_review" | "auto_approved">("important_review");
+  const [page, setPage] = useState(0);
+  const [selectedId, setSelectedId] = useState("");
+  const path = `/ai-reviews?decision=${decision}&limit=${PAGE_SIZE}&offset=${page * PAGE_SIZE}`;
+  const { data, loading, error } = useOwnerData<{
+    total: number;
+    totals: { important: number; autoApproved: number };
+    reviews: AIReview[];
+  }>(path, revision);
+  const reviews = data?.reviews ?? [];
+  const selected = reviews.find((review) => review.id === selectedId) ?? reviews[0];
+  useEffect(() => setPage(0), [decision]);
+  useEffect(() => setSelectedId(""), [decision]);
+
+  return (
+    <>
+      <PageHeading
+        eyebrow="MODERATION / INTELLIGENCE"
+        title="AI decisions"
+        description="Routine, low-risk stories are published automatically. Unclear or high-risk cases wait here for your decision."
+      />
+      <div className="ai-review-disclosure">
+        <Sparkles size={17} />
+        <span>
+          The AI reads the full story and checks attached proof for relevance and exposed sensitive details. It cannot verify whether a claim or document is true.
+        </span>
+      </div>
+      <div className="toolbar-row ai-review-tabs" role="tablist" aria-label="AI decisions">
+        <button
+          className={decision === "important_review" ? "is-selected" : ""}
+          role="tab"
+          aria-selected={decision === "important_review"}
+          onClick={() => setDecision("important_review")}
+        >
+          Needs your review <span>{data?.totals.important ?? 0}</span>
+        </button>
+        <button
+          className={decision === "auto_approved" ? "is-selected" : ""}
+          role="tab"
+          aria-selected={decision === "auto_approved"}
+          onClick={() => setDecision("auto_approved")}
+        >
+          Auto-approved <span>{data?.totals.autoApproved ?? 0}</span>
+        </button>
+      </div>
+      {error ? <LoadError message={error} /> : null}
+      <div className="master-detail">
+        <div className="list-column">
+          <section className="surface-panel record-list">
+            {loading && !data ? (
+              <LoadingRows />
+            ) : reviews.length ? (
+              reviews.map((review) => (
+                <button
+                  key={review.id}
+                  className={`record-row ${selected?.id === review.id ? "selected" : ""}`}
+                  onClick={() => setSelectedId(review.id)}
+                >
+                  <span className="record-row-main">
+                    <span className="record-title">{review.story.title}</span>
+                    <span className="record-subtitle">
+                      {review.story.company_name || "Unlinked employer"} · {review.risk_level} risk · {Math.round(review.confidence * 100)}% confidence
+                    </span>
+                    <span className="record-excerpt">{review.summary}</span>
+                  </span>
+                  <span className={`ai-risk risk-${review.risk_level}`}>
+                    {decision === "auto_approved" ? "Auto-approved" : "Review"}
+                  </span>
+                </button>
+              ))
+            ) : (
+              <EmptyState
+                title={decision === "important_review" ? "Nothing needs your attention" : "No AI approvals yet"}
+                detail={decision === "important_review" ? "Only uncertain or high-risk cases appear in this queue." : "Low-risk stories approved by the AI will appear here."}
+              />
+            )}
+          </section>
+          <Pager page={page} pageSize={PAGE_SIZE} total={data?.total ?? 0} onChange={setPage} />
+        </div>
+        {selected ? (
+          <aside className="surface-panel inspector ai-review-inspector">
+            <div className="inspector-top">
+              <span className="eyebrow">AI REVIEW · {selected.story_id.slice(0, 8)}</span>
+              <StatusBadge value={selected.story.status} />
+            </div>
+            <h2>{selected.story.title}</h2>
+            <p className="inspector-meta">
+              {selected.story.company_name || "Unlinked employer"} · {selected.story.county || "County not set"} · {formatDateTime(selected.created_at)}
+            </p>
+            <div className="ai-decision-summary">
+              <div>
+                <span className={`ai-risk risk-${selected.risk_level}`}>{selected.risk_level} risk</span>
+                <span className="ai-confidence">{Math.round(selected.confidence * 100)}% confidence</span>
+              </div>
+              <p>{selected.summary}</p>
+              <small>Verdict: {selected.verdict} · Model: {selected.model}</small>
+            </div>
+            {selected.risk_flags.length ? (
+              <div className="ai-flag-list">
+                {selected.risk_flags.map((flag) => <span key={flag}>{flag}</span>)}
+              </div>
+            ) : null}
+            {selected.concerns.length ? (
+              <section className="ai-concerns">
+                <h3>What needs a closer look</h3>
+                {selected.concerns.map((concern, index) => (
+                  <article key={`${concern.excerpt}-${index}`}>
+                    <blockquote>{concern.excerpt ? `“${concern.excerpt}”` : "No exact excerpt supplied"}</blockquote>
+                    <p>{concern.reason}</p>
+                  </article>
+                ))}
+              </section>
+            ) : null}
+            <section className="ai-full-story">
+              <h3>Full story</h3>
+              <div className="story-copy">{selected.story.body}</div>
+            </section>
+            {selected.evidence ? (
+              <section className="ai-proof-panel">
+                <h3>Submitted proof</h3>
+                {selected.evidence.note ? <p>{selected.evidence.note}</p> : null}
+                <p className="inspector-meta">AI assessment: {selected.evidence_summary || selected.evidence_assessment}</p>
+                {selected.evidence.has_file ? (
+                  <EvidencePreview storyId={selected.story_id} format={selected.evidence.file_format || ""} />
+                ) : null}
+              </section>
+            ) : null}
+            <div className="action-row ai-owner-actions">
+              <button
+                className="primary-button"
+                disabled={busy || selected.story.status === "published"}
+                onClick={() => void runAction({ entity: "story", id: selected.story_id, status: "published", moderation_note: null })}
+              >
+                <Check size={15} /> Publish
+              </button>
+              <button
+                className="secondary-button"
+                disabled={busy || selected.story.status === "pending"}
+                onClick={() => void runAction({ entity: "story", id: selected.story_id, status: "pending", moderation_note: selected.summary })}
+              >
+                <Clock3 size={15} /> Hold
+              </button>
+              <button
+                className="danger-button"
+                disabled={busy || selected.story.status === "hidden"}
+                onClick={() => void runAction({ entity: "story", id: selected.story_id, status: "hidden", moderation_note: selected.summary })}
+              >
+                <X size={15} /> Hide
+              </button>
+            </div>
+          </aside>
+        ) : null}
+      </div>
+    </>
+  );
+}
+
+function EvidencePreview({ storyId, format }: { storyId: string; format: string }) {
+  const [open, setOpen] = useState(false);
+  const [src, setSrc] = useState("");
+  const [error, setError] = useState("");
+  useEffect(() => {
+    if (!open) return;
+    const controller = new AbortController();
+    let objectUrl = "";
+    setError("");
+    void fetch(`/api/owner/stories/${encodeURIComponent(storyId)}/evidence`, { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) {
+          const payload = await response.json().catch(() => ({}));
+          throw new Error(payload.error || "Proof preview could not be loaded.");
+        }
+        return response.blob();
+      })
+      .then((blob) => {
+        objectUrl = URL.createObjectURL(blob);
+        setSrc(objectUrl);
+      })
+      .catch((reason: unknown) => {
+        if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : "Proof preview could not be loaded.");
+      });
+    return () => {
+      controller.abort();
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+      setSrc("");
+    };
+  }, [open, storyId]);
+
+  return (
+    <div className="evidence-preview-wrap">
+      <button className="secondary-button" onClick={() => setOpen((value) => !value)}>
+        {open ? "Close proof" : `View proof · ${format.toUpperCase()}`}
+      </button>
+      {open ? error ? <LoadError message={error} /> : src ? (
+        format.toLowerCase() === "pdf"
+          ? <iframe className="evidence-frame" src={src} title="Private employment proof" />
+          : <img className="evidence-image" src={src} alt="Private employment proof" />
+      ) : <p className="muted-text">Opening private proof…</p> : null}
+    </div>
   );
 }
 

@@ -20,11 +20,16 @@ The repository includes `netlify.toml` and a Netlify Function for the owner API.
 In the **owner console's Netlify site** settings, add these environment variables:
 
 - `FIREBASE_SERVICE_ACCOUNT_JSON`: the full service-account JSON for the main app's Firebase project. Scope it to Functions.
-The console opens without a sign-in screen. Every owner API endpoint is also unauthenticated, so anyone who can reach the Netlify URL can read and change the connected app's data. Keep the Netlify site private and share its URL only with trusted people. Keep the Firebase service-account JSON out of `VITE_*` variables and browser code.
+- `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, and `CLOUDINARY_API_SECRET`: server-side credentials for securely previewing authenticated employment proof. Scope these to Functions; never add them as `VITE_*` variables.
+
+Before using the deployed console, set its Netlify project visibility to **Private** for both production deploys and previews. In Netlify, open **Project configuration → General → Visitor access → Project visibility** and choose **Private**. This protects the site and its API routes with Netlify access; the app itself still has no sign-in screen. Netlify documents private projects as accessible only to your team and invited people, and on Free/Personal plans only the Team Owner can access them: [Project visibility](https://docs.netlify.com/manage/security/secure-access-to-sites/project-visibility/).
+
+The AI moderation runs in the main app's server environment, so set `OPENROUTER_API_KEY` and the existing Cloudinary server credentials in the **main app's** Netlify site, scoped to server functions. The owner console reads the resulting private `story_ai_reviews` records from the same Firestore project. No AI key is required in the owner app.
 
 ## Included workflows
 
 - Dashboard totals for stories, reports, people, companies, comments, salary contributions, and ratings.
+- AI review queue: high-risk or uncertain stories, full-story reasoning, proof preview, and a separate list of automatic low-risk approvals.
 - Story publication review, comment-thread moderation, and report resolution.
 - Member restrictions, company classification and verification, public contact settings, and an audit log.
 - Private member-message review, replies from the Candid official account, and support chat/ticket handling. Opening message threads and sending replies are recorded in the audit log.

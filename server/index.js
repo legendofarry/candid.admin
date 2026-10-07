@@ -3,6 +3,7 @@ import { createServer } from "node:http";
 import { resolve } from "node:path";
 import dotenv from "dotenv";
 import express from "express";
+import { v2 as cloudinary } from "cloudinary";
 import { cert, getApps, initializeApp } from "firebase-admin/app";
 import { FieldValue, getFirestore } from "firebase-admin/firestore";
 
@@ -83,10 +84,10 @@ async function audit(action, targetType = null, targetId = null, payload = null)
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
 app.get("/api/owner/stats", async (_req, res) => {
-  const [stories, companies, users, comments, reports, salaries, ratings] = await Promise.all([
+  const [stories, companies, users, comments, reports, salaries, ratings, aiReviews] = await Promise.all([
     collection("stories"), collection("companies"), collection("profiles"),
     collection("comments"), collection("reports"), collection("salary_reports"),
-    collection("company_ratings"),
+    collection("company_ratings"), collection("story_ai_reviews"),
   ]);
   const since = new Date(Date.now() - 7 * 86_400_000).toISOString();
   res.json({
@@ -103,6 +104,10 @@ app.get("/api/owner/stats", async (_req, res) => {
     reportsOpen: reports.filter((item) => item.status === "open").length,
     salaryReports: salaries.length,
     companyRatings: ratings.length,
+    intelligence: {
+      needsReview: aiReviews.filter((item) => item.decision === "important_review" && item.owner_reviewed !== true).length,
+      autoApproved: aiReviews.filter((item) => item.decision === "auto_approved").length,
+    },
     generatedAt: new Date().toISOString(),
   });
 });
@@ -131,6 +136,95 @@ app.get("/api/owner/stories", async (req, res) => {
       profiles: item.author_id ? profileById.get(item.author_id) || null : null,
     })),
   });
+});
+
+app.get("/api/owner/ai-reviews", async (req, res) => {
+  const { limit, offset } = pageParams(new URL(req.url, "http://owner.local"));
+  const decision = String(req.query.decision || "important_review");
+  const [reviews, stories, evidence] = await Promise.all([
+    collection("story_ai_reviews"), collection("stories"), collection("employment_evidence"),
+  ]);
+  const storyById = new Map(stories.map((item) => [item.id, item]));
+  const evidenceByStory = new Map(evidence.map((item) => [item.story_id || item.id, {
+    note: item.note || null,
+    status: item.status || null,
+    file_format: item.file_format || null,
+    file_bytes: item.file_bytes || null,
+    has_file: typeof item.cloudinary_public_id === "string",
+  }]));
+  const filtered = reviews
+    .filter((item) => item.decision === decision)
+    .filter((item) => decision !== "important_review" || item.owner_reviewed !== true)
+    .map((item) => ({
+      ...item,
+      story: storyById.get(item.story_id) || null,
+      evidence: evidenceByStory.get(item.story_id) || null,
+    }))
+    .filter((item) => item.story)
+    .sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")));
+  res.json({
+    total: filtered.length,
+    totals: {
+      important: reviews.filter((item) => item.decision === "important_review" && item.owner_reviewed !== true).length,
+      autoApproved: reviews.filter((item) => item.decision === "auto_approved").length,
+    },
+    reviews: filtered.slice(offset, offset + limit),
+  });
+});
+
+function cloudinaryCredentials() {
+  const cloudName = process.env.CLOUDINARY_CLOUD_NAME || process.env.VITE_CLOUDINARY_CLOUD_NAME;
+  const apiKey = process.env.CLOUDINARY_API_KEY;
+  const apiSecret = process.env.CLOUDINARY_API_SECRET;
+  if (!cloudName || !apiKey || !apiSecret) {
+    throw new Error("Cloudinary proof access is not configured. Add the Cloudinary server credentials to the owner app environment.");
+  }
+  cloudinary.config({ cloud_name: cloudName, api_key: apiKey, api_secret: apiSecret, secure: true });
+  return { cloudName };
+}
+
+app.get("/api/owner/stories/:id/evidence", async (req, res) => {
+  const storyId = String(req.params.id || "");
+  if (!storyId || storyId.length > 180 || storyId.includes("/")) {
+    return res.status(400).json({ error: "Invalid story id" });
+  }
+  const proof = await document("employment_evidence", storyId);
+  if (!proof || typeof proof.cloudinary_public_id !== "string") {
+    return res.status(404).json({ error: "No uploaded proof is attached to this story" });
+  }
+  const publicId = proof.cloudinary_public_id;
+  const format = String(proof.file_format || "").toLowerCase();
+  const formats = new Map([
+    ["jpg", "image/jpeg"], ["jpeg", "image/jpeg"], ["png", "image/png"],
+    ["webp", "image/webp"], ["pdf", "application/pdf"],
+  ]);
+  const mimeType = formats.get(format);
+  if (!mimeType || publicId !== `candid-employment-evidence/${storyId}`
+    || proof.cloudinary_resource_type !== "image"
+    || proof.cloudinary_delivery_type !== "authenticated") {
+    return res.status(422).json({ error: "This proof record is not eligible for secure preview" });
+  }
+  cloudinaryCredentials();
+  const downloadUrl = cloudinary.utils.private_download_url(publicId, format, {
+    resource_type: "image",
+    type: "authenticated",
+    expires_at: Math.floor(Date.now() / 1000) + 90,
+    attachment: false,
+  });
+  const file = await fetch(downloadUrl, { signal: AbortSignal.timeout(15_000) });
+  if (!file.ok) return res.status(502).json({ error: "Cloudinary could not open this proof file" });
+  const bytes = Buffer.from(await file.arrayBuffer());
+  if (!bytes.length || bytes.length > 5 * 1024 * 1024
+    || (Number(proof.file_bytes) > 0 && bytes.length !== Number(proof.file_bytes))) {
+    return res.status(422).json({ error: "The proof file exceeds the preview size limit" });
+  }
+  res.setHeader("content-type", mimeType);
+  res.setHeader("content-length", String(bytes.length));
+  res.setHeader("content-disposition", "inline");
+  res.setHeader("cache-control", "private, no-store, max-age=0");
+  res.setHeader("content-security-policy", "sandbox; default-src 'none'; style-src 'unsafe-inline'");
+  res.setHeader("x-content-type-options", "nosniff");
+  res.send(bytes);
 });
 
 app.get("/api/owner/reports", async (req, res) => {
@@ -613,7 +707,19 @@ app.post("/api/owner/actions", async (req, res) => {
         : input.moderation_note,
       moderated_at: timestamp,
     });
-    await audit(`story.${input.status}`, "story", input.id, { moderation_note: input.moderation_note ?? null });
+    const reviewRef = database.collection("story_ai_reviews").doc(input.id);
+    const reviewSnapshot = await reviewRef.get();
+    if (reviewSnapshot.exists) {
+      await reviewRef.update({
+        owner_reviewed: input.status !== "pending",
+        owner_outcome: input.status,
+        owner_reviewed_at: input.status === "pending" ? null : timestamp,
+      });
+    }
+    await audit(`story.${input.status}`, "story", input.id, {
+      moderation_note: input.moderation_note ?? null,
+      ai_reviewed: reviewSnapshot.exists,
+    });
   } else if (input.entity === "comment" && ["published", "hidden"].includes(input.status)) {
     const comments = await collection("comments");
     const selected = comments.find((item) => item.id === input.id);
