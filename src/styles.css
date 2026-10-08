@@ -944,13 +944,15 @@ button.metric-card {
   background: #9aa39c;
 }
 .status-pending,
-.status-open {
+.status-open,
+.status-investigation {
   color: #8b5b09;
   border-color: #f3e2bd;
   background: #fffaf0;
 }
 .status-pending i,
-.status-open i {
+.status-open i,
+.status-investigation i {
   background: #d49b2b;
 }
 .status-published,

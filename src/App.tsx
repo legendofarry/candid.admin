@@ -63,6 +63,12 @@ type Section =
   | "audit";
 const PAGE_SIZE = 50;
 
+function isUnderInvestigation(user: Pick<OwnerUser, "investigation_hold">) {
+  return user.investigation_hold === true || (
+    typeof user.investigation_hold === "object" && user.investigation_hold?.active === true
+  );
+}
+
 const navigation: { id: Section; label: string; icon: typeof LayoutDashboard; group: string }[] = [
   { id: "overview", label: "Overview", icon: LayoutDashboard, group: "Workspace" },
   { id: "inbox", label: "Inbox", icon: Inbox, group: "Workspace" },
@@ -1550,7 +1556,7 @@ function PeopleView({
       <PageHeading
         eyebrow="DIRECTORY / PEOPLE"
         title="Community accounts"
-        description="Inspect anonymous profiles and restrict accounts when needed."
+        description="Review member accounts, place an investigation hold, or restrict access when needed."
       />
       <div className="toolbar-row">
         <SearchField
@@ -1587,7 +1593,7 @@ function PeopleView({
                     </span>
                     <span className="record-excerpt">Joined {formatDate(person.created_at)}</span>
                   </span>
-                  {person.banned ? <StatusBadge value="banned" /> : null}
+                  {isUnderInvestigation(person) ? <StatusBadge value="investigation" /> : person.banned ? <StatusBadge value="banned" /> : null}
                 </button>
               ))
             ) : (
@@ -1603,7 +1609,7 @@ function PeopleView({
           <aside className="surface-panel inspector">
             <div className="inspector-top">
               <span className="eyebrow">MEMBER PROFILE</span>
-              <StatusBadge value={selected.banned ? "banned" : "active"} />
+              <StatusBadge value={isUnderInvestigation(selected) ? "investigation" : selected.banned ? "banned" : "active"} />
             </div>
             <div className="profile-summary">
               <span className="profile-avatar">
@@ -1619,9 +1625,22 @@ function PeopleView({
             <div className="fact-list">
               <Fact label="Account ID" value={selected.id} />
               <Fact label="Joined" value={formatDateTime(selected.created_at)} />
-              <Fact label="Status" value={selected.banned ? "Restricted" : "Active"} />
+              <Fact label="Status" value={isUnderInvestigation(selected) ? "Under investigation" : selected.banned ? "Restricted" : "Active"} />
             </div>
             {messageError ? <p className="form-error" role="alert">{messageError}</p> : null}
+            <button
+              className={isUnderInvestigation(selected) ? "secondary-button wide-button" : "danger-button wide-button"}
+              disabled={busy}
+              onClick={() => void runAction({
+                entity: "user_investigation",
+                id: selected.id,
+                active: !isUnderInvestigation(selected),
+              })}
+            >
+              {isUnderInvestigation(selected) ? <Check size={15} /> : <ShieldAlert size={15} />}
+              {isUnderInvestigation(selected) ? "End investigation hold" : "Place on investigation hold"}
+            </button>
+            <p className="hint-text">An investigation hold blocks the member from using Candid. They see a full-screen notice and can only sign out.</p>
             <button
               className="primary-button wide-button"
               disabled={selected.banned || messaging}

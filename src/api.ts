@@ -61,6 +61,7 @@ export type OwnerUser = {
   username?: string | null;
   county: string | null;
   banned: boolean;
+  investigation_hold?: boolean | { active?: boolean; started_at?: string | null; note?: string | null } | null;
   account_type?: string;
   created_at: string;
 };

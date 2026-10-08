@@ -854,6 +854,17 @@ app.post("/api/owner/actions", async (req, res) => {
     if (!(await document("profiles", input.id))) return res.status(404).json({ error: "User not found" });
     await database.collection("profiles").doc(input.id).update({ banned: input.banned });
     await audit(input.banned ? "user.banned" : "user.unbanned", "user", input.id);
+  } else if (input.entity === "user_investigation" && typeof input.active === "boolean") {
+    if (!(await document("profiles", input.id))) return res.status(404).json({ error: "User not found" });
+    const ref = database.collection("profiles").doc(input.id);
+    const snapshot = await ref.get();
+    const previous = snapshot.data()?.investigation_hold;
+    const wasActive = previous === true || (typeof previous === "object" && previous?.active === true);
+    const nextHold = input.active
+      ? { active: true, started_at: wasActive && typeof previous === "object" ? previous.started_at || timestamp : timestamp, updated_at: timestamp, updated_by: "owner" }
+      : { active: false, started_at: typeof previous === "object" ? previous.started_at || null : null, ended_at: timestamp, updated_at: timestamp, updated_by: "owner" };
+    await ref.update({ investigation_hold: nextHold });
+    await audit(input.active ? "user.investigation_hold_started" : "user.investigation_hold_ended", "user", input.id);
   } else if (input.entity === "billing_subscription") {
     if (!(await document("profiles", input.id))) return res.status(404).json({ error: "User not found" });
     const tiers = ["basic", "premium", "gold"];
