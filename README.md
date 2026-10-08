@@ -30,6 +30,7 @@ The AI moderation runs in the main app's server environment, so set `OPENROUTER_
 
 - Dashboard totals for stories, reports, people, companies, comments, salary contributions, and ratings.
 - AI review queues: high-risk or uncertain stories, full-story reasoning, proof preview, and automatic low-risk approvals; plus member requests for official company badges. Clear verified-company matches may be approved automatically; all uncertain requests are surfaced for owner approval or decline.
+- Billing preparation: inspect each member's Basic, Premium, or Gold package; record subscription status, dates, provider and transaction reference; track badge-payment status separately from badge approval. Current package defaults are Basic (free), Premium (KSh 500/month), and Gold (KSh 1,000/month). Owner entries are records only; no charges or payment-provider callbacks are enabled yet.
 - Story publication review, comment-thread moderation, and report resolution.
 - Member restrictions, company classification and verification, public contact settings, and an audit log.
 - AI account decisions and owner verification decisions appear in the account approval history and audit log. Ordinary registration remains open; this workflow reviews requests for an official company badge.

@@ -5,11 +5,13 @@ import {
   ArrowUpRight,
   BadgeCheck,
   Ban,
+  BadgeDollarSign,
   Building2,
   Check,
   ChevronLeft,
   ChevronRight,
   Clock3,
+  CreditCard,
   FileText,
   Flame,
   Heart,
@@ -36,6 +38,7 @@ import {
   type AIReview,
   type OwnerComment,
   type OwnerCompany,
+  type OwnerBillingUser,
   type OwnerInboxDetail,
   type OwnerInboxThread,
   type OwnerReport,
@@ -56,6 +59,7 @@ type Section =
   | "comments"
   | "companies"
   | "people"
+  | "billing"
   | "contact"
   | "audit";
 const PAGE_SIZE = 50;
@@ -69,6 +73,7 @@ const navigation: { id: Section; label: string; icon: typeof LayoutDashboard; gr
   { id: "comments", label: "Comments", icon: MessageSquareText, group: "Moderation" },
   { id: "companies", label: "Companies", icon: Building2, group: "Directory" },
   { id: "people", label: "People", icon: UsersRound, group: "Directory" },
+  { id: "billing", label: "Billing", icon: CreditCard, group: "Directory" },
   { id: "contact", label: "Site contact", icon: LifeBuoy, group: "Configuration" },
   { id: "audit", label: "Audit log", icon: Activity, group: "Configuration" },
 ];
@@ -168,6 +173,8 @@ function OwnerConsole() {
           setInboxThreadToOpen(id);
           setSection("inbox");
         }} />;
+      case "billing":
+        return <BillingView {...shared} />;
       case "contact":
         return <ContactView {...shared} />;
       case "audit":
@@ -428,6 +435,7 @@ function InboxView({ revision, initialThreadId = "" }: { revision: number; initi
                   </span>
                   <span className="record-excerpt">{thread.preview}</span>
                   <span className="record-subtitle">{thread.kind === "support_ticket" ? `${thread.category} · ticket` : thread.kind === "support_chat" ? "Support chat" : "Direct message"} · {formatDateTime(thread.last_message_at)}</span>
+                  {thread.needs_owner ? <span className="support-escalation-flag">Needs your attention{thread.escalation_reason ? ` · ${thread.escalation_reason}` : ""}</span> : null}
                 </span>
               </button>
             ))}
@@ -444,6 +452,7 @@ function InboxView({ revision, initialThreadId = "" }: { revision: number; initi
                   <p className="eyebrow">{selected.kind === "direct" ? "DIRECT MESSAGE" : selected.kind === "support_chat" ? "SUPPORT CHAT" : "SUPPORT TICKET"}</p>
                   <h2>{selected.subject || selected.participants?.filter((participant) => participant.id !== OFFICIAL_ID).map((participant) => `@${participant.username}`).join(" · ") || "Member conversation"}</h2>
                   <p>{selected.category ? `Category: ${selected.category} · ` : ""}{selected.status}</p>
+                  {selected.needs_owner ? <span className="support-escalation-flag">AI escalated · {selected.escalation_reason || "Needs owner follow-up"}</span> : null}
                 </div>
                 <div className="inbox-heading-actions">
                   {selected.unread > 0 ? <span className="status-badge status-open"><i />{selected.unread} unread</span> : null}
@@ -462,10 +471,10 @@ function InboxView({ revision, initialThreadId = "" }: { revision: number; initi
                     : message.sender_type !== "user";
                   const sender = selected.kind === "direct"
                     ? selected.participants?.find((participant) => participant.id === message.sender_id)?.username || "member"
-                    : isOfficial ? "Candid support" : selected.subject || "member";
+                    : message.sender_type === "ai" ? "Candid assistant" : isOfficial ? "Candid support" : selected.subject || "member";
                   return (
                     <article key={message.id} className={`inbox-message ${isOfficial ? "is-owner" : ""}`}>
-                      <div className="inbox-message-meta"><strong>{isOfficial ? "Candid official" : `@${sender}`}</strong><time>{formatDateTime(message.created_at)}</time></div>
+                      <div className="inbox-message-meta"><strong>{message.sender_type === "ai" ? "Candid assistant" : isOfficial ? "Candid official" : `@${sender}`}</strong><time>{formatDateTime(message.created_at)}</time></div>
                       <p>{message.body}</p>
                     </article>
                   );
@@ -1639,6 +1648,158 @@ function PeopleView({
               </button>
             )}
             <p className="hint-text">Restricted accounts can no longer post, comment, or vote.</p>
+          </aside>
+        ) : null}
+      </div>
+    </>
+  );
+}
+
+function BillingView({ revision, runAction, busy }: ViewProps) {
+  const [page, setPage] = useState(0);
+  const [query, setQuery] = useState("");
+  const [tier, setTier] = useState<"all" | "basic" | "premium" | "gold">("all");
+  const [selectedId, setSelectedId] = useState("");
+  const [subscription, setSubscription] = useState({
+    tier: "basic",
+    status: "active",
+    provider: "",
+    started_at: "",
+    period_ends_at: "",
+    amount_kes: "",
+    external_reference: "",
+  });
+  const [badge, setBadge] = useState({
+    badge_payment_status: "not_purchased",
+    badge_amount_kes: "",
+    badge_provider: "",
+    badge_external_reference: "",
+  });
+  const search = useDebouncedValue(query);
+  const path = `/billing?tier=${tier}&limit=${PAGE_SIZE}&offset=${page * PAGE_SIZE}${search ? `&q=${encodeURIComponent(search)}` : ""}`;
+  const { data, loading, error } = useOwnerData<{
+    total: number;
+    totals: { basic: number; premium: number; gold: number; paidBadges: number };
+    users: OwnerBillingUser[];
+  }>(path, revision);
+  const people = data?.users ?? [];
+  const selected = people.find((person) => person.id === selectedId) ?? people[0];
+  useEffect(() => { setPage(0); }, [search, tier]);
+  useEffect(() => {
+    if (!selected) return;
+    setSubscription({
+      tier: selected.tier,
+      status: selected.status,
+      provider: selected.provider || "",
+      started_at: selected.started_at?.slice(0, 10) || "",
+      period_ends_at: selected.period_ends_at?.slice(0, 10) || "",
+      amount_kes: selected.amount_kes == null ? "" : String(selected.amount_kes),
+      external_reference: selected.external_reference || "",
+    });
+    setBadge({
+      badge_payment_status: selected.badge_payment_status,
+      badge_amount_kes: selected.badge_amount_kes == null ? "" : String(selected.badge_amount_kes),
+      badge_provider: selected.badge_provider || "",
+      badge_external_reference: selected.badge_external_reference || "",
+    });
+  }, [selected?.id, selected?.tier, selected?.status, selected?.badge_payment_status, selected?.amount_kes, selected?.badge_amount_kes, selected?.provider, selected?.started_at, selected?.period_ends_at, selected?.external_reference, selected?.badge_provider, selected?.badge_external_reference]);
+
+  const dateValue = (value: string) => value ? new Date(`${value}T23:59:59.000Z`).toISOString() : null;
+  const amountValue = (value: string) => value.trim() ? Number(value) : null;
+
+  return (
+    <>
+      <PageHeading
+        eyebrow="REVENUE / MEMBERSHIPS"
+        title="Billing & entitlements"
+        description="Track package assignments and badge payments. No payments are processed yet; Basic is the default for everyone."
+      />
+      <div className="billing-summary-grid">
+        {([
+          ["Basic", data?.totals.basic ?? 0, "Free"],
+          ["Premium", data?.totals.premium ?? 0, "KSh 500 / month"],
+          ["Gold", data?.totals.gold ?? 0, "KSh 1,000 / month"],
+          ["Paid badges", data?.totals.paidBadges ?? 0, "Owner-recorded payments"],
+        ] as const).map(([label, count, detail]) => (
+          <article className="surface-panel billing-summary-card" key={label}>
+            <span>{label}</span><strong>{count}</strong><small>{detail}</small>
+          </article>
+        ))}
+      </div>
+      <div className="toolbar-row billing-toolbar">
+        <SearchField value={query} onChange={setQuery} placeholder="Search username or account ID" />
+        <select className="select-control" value={tier} onChange={(event) => setTier(event.target.value as typeof tier)} aria-label="Filter package">
+          <option value="all">All packages</option><option value="basic">Basic</option><option value="premium">Premium</option><option value="gold">Gold</option>
+        </select>
+        <span className="result-count">{people.length} of {data?.total ?? 0}</span>
+      </div>
+      {error ? <LoadError message={error} /> : null}
+      <div className="master-detail">
+        <div className="list-column">
+          <section className="surface-panel record-list">
+            {loading && !data ? <LoadingRows /> : people.length ? people.map((person) => (
+              <button key={person.id} className={`record-row ${selected?.id === person.id ? "selected" : ""}`} onClick={() => setSelectedId(person.id)}>
+                <span className="avatar-small">{(person.username || person.handle || "U").slice(0, 1).toUpperCase()}</span>
+                <span className="record-row-main">
+                  <span className="record-title">{person.username ? `@${person.username}` : person.handle}</span>
+                  <span className="record-subtitle">{person.tier} · {person.status} · {person.account_type || "Member"}</span>
+                  <span className="record-excerpt">Badge payment: {person.badge_payment_status.replaceAll("_", " ")}</span>
+                </span>
+                {person.tier !== "basic" ? <StatusBadge value={person.tier} /> : null}
+              </button>
+            )) : <EmptyState title="No accounts found" detail="Try another package or search term." />}
+          </section>
+          <Pager page={page} pageSize={PAGE_SIZE} total={data?.total ?? 0} onChange={setPage} />
+        </div>
+        {selected ? (
+          <aside className="surface-panel inspector billing-inspector">
+            <div className="inspector-top"><span className="eyebrow">MEMBERSHIP · {selected.id.slice(0, 8)}</span><StatusBadge value={selected.status} /></div>
+            <div className="profile-summary"><span className="profile-avatar">{(selected.username || selected.handle || "U").slice(0, 1).toUpperCase()}</span><div><h2>{selected.username ? `@${selected.username}` : selected.handle}</h2><p className="inspector-meta">{selected.account_type || "Member"} · {selected.county || "County not set"}</p></div></div>
+            <div className="billing-owner-form">
+              <h3><CreditCard size={16} /> Membership package</h3>
+              <label className="form-field"><span>Package</span><select className="select-control" value={subscription.tier} onChange={(event) => setSubscription({ ...subscription, tier: event.target.value })}><option value="basic">Basic · Free</option><option value="premium">Premium · KSh 500 / month</option><option value="gold">Gold · KSh 1,000 / month</option></select></label>
+              <label className="form-field"><span>Status</span><select className="select-control" value={subscription.status} onChange={(event) => setSubscription({ ...subscription, status: event.target.value })}><option value="active">Active</option><option value="cancelled">Cancelled</option><option value="expired">Expired</option><option value="past_due">Past due</option></select></label>
+              <div className="billing-fields-two">
+                <label className="form-field"><span>Started</span><input className="input-control" type="date" value={subscription.started_at} onChange={(event) => setSubscription({ ...subscription, started_at: event.target.value })} /></label>
+                <label className="form-field"><span>Period ends</span><input className="input-control" type="date" value={subscription.period_ends_at} onChange={(event) => setSubscription({ ...subscription, period_ends_at: event.target.value })} /></label>
+              </div>
+              <div className="billing-fields-two">
+                <label className="form-field"><span>Amount paid (KSh)</span><input className="input-control" type="number" min="0" step="1" value={subscription.amount_kes} onChange={(event) => setSubscription({ ...subscription, amount_kes: event.target.value })} placeholder="Not recorded" /></label>
+                <label className="form-field"><span>Payment provider</span><input className="input-control" value={subscription.provider} onChange={(event) => setSubscription({ ...subscription, provider: event.target.value })} placeholder="e.g. M-Pesa" /></label>
+              </div>
+              <label className="form-field"><span>Payment reference</span><input className="input-control" value={subscription.external_reference} onChange={(event) => setSubscription({ ...subscription, external_reference: event.target.value })} placeholder="Optional transaction reference" /></label>
+              <button className="primary-button wide-button" disabled={busy} onClick={() => void runAction({
+                entity: "billing_subscription", id: selected.id, tier: subscription.tier, status: subscription.status,
+                provider: subscription.provider.trim() || null, started_at: dateValue(subscription.started_at),
+                period_ends_at: dateValue(subscription.period_ends_at), amount_kes: amountValue(subscription.amount_kes),
+                external_reference: subscription.external_reference.trim() || null,
+              })}><Check size={15} /> Save package record</button>
+            </div>
+            <div className="billing-owner-form">
+              <h3><BadgeDollarSign size={16} /> Verification badge payment</h3>
+              <div className="billing-badge-status"><span>Verification approval</span><strong>{selected.badge_approval_status.replaceAll("_", " ")} · badge {selected.badge_status}</strong></div>
+              <label className="form-field"><span>Payment status</span><select className="select-control" value={badge.badge_payment_status} onChange={(event) => setBadge({ ...badge, badge_payment_status: event.target.value })}><option value="not_purchased">Not purchased</option><option value="pending">Payment pending</option><option value="paid">Paid</option><option value="waived">Waived by owner</option><option value="refunded">Refunded</option></select></label>
+              <div className="billing-fields-two">
+                <label className="form-field"><span>Amount (KSh)</span><input className="input-control" type="number" min="0" step="1" value={badge.badge_amount_kes} onChange={(event) => setBadge({ ...badge, badge_amount_kes: event.target.value })} placeholder="Set when pricing is decided" /></label>
+                <label className="form-field"><span>Payment provider</span><input className="input-control" value={badge.badge_provider} onChange={(event) => setBadge({ ...badge, badge_provider: event.target.value })} placeholder="e.g. M-Pesa" /></label>
+              </div>
+              <label className="form-field"><span>Payment reference</span><input className="input-control" value={badge.badge_external_reference} onChange={(event) => setBadge({ ...badge, badge_external_reference: event.target.value })} placeholder="Optional transaction reference" /></label>
+              <button className="secondary-button wide-button" disabled={busy} onClick={() => void runAction({
+                entity: "billing_badge", id: selected.id, badge_payment_status: badge.badge_payment_status,
+                badge_amount_kes: amountValue(badge.badge_amount_kes), badge_provider: badge.badge_provider.trim() || null,
+                badge_external_reference: badge.badge_external_reference.trim() || null,
+              })}><Check size={15} /> Save badge payment</button>
+              <p className="hint-text">Badge payment and badge approval are tracked separately. This records owner-confirmed payment details; it does not process charges.</p>
+            </div>
+            <div className="billing-history">
+              <h3>Recent billing changes</h3>
+              {selected.billing_events.length ? selected.billing_events.map((event) => (
+                <div className="billing-history-row" key={event.id}>
+                  <span>{event.type === "badge_payment_admin_update" ? "Badge payment updated" : "Membership updated"}</span>
+                  <small>{formatDateTime(event.created_at)}</small>
+                </div>
+              )) : <p className="hint-text">No billing changes recorded.</p>}
+            </div>
           </aside>
         ) : null}
       </div>

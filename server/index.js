@@ -317,6 +317,59 @@ app.get("/api/owner/users", async (req, res) => {
   res.json({ total: filtered.length, limit, offset, users: filtered.slice(offset, offset + limit) });
 });
 
+app.get("/api/owner/billing", async (req, res) => {
+  const { limit, offset } = pageParams(new URL(req.url, "http://owner.local"));
+  const query = String(req.query.q || "").toLowerCase();
+  const tierFilter = String(req.query.tier || "all");
+  const [profiles, billingAccounts, verifications, billingEvents] = await Promise.all([
+    collection("profiles"), collection("billing_accounts"), collection("account_verifications"), collection("billing_events"),
+  ]);
+  const billingByUser = new Map(billingAccounts.map((item) => [item.user_id || item.id, item]));
+  const verificationByUser = new Map(verifications.map((item) => [item.user_id || item.id, item]));
+  const users = profiles.map((profile) => {
+    const billing = billingByUser.get(profile.id) || {};
+    const verification = verificationByUser.get(profile.id) || {};
+    return {
+      id: profile.id,
+      handle: profile.handle || "member",
+      username: profile.username || null,
+      county: profile.county || null,
+      banned: profile.banned === true,
+      account_type: profile.account_type || "individual",
+      created_at: profile.created_at || null,
+      tier: billing.tier || profile.subscription_tier || "basic",
+      status: billing.status || profile.subscription_status || "active",
+      provider: billing.provider || profile.subscription_provider || null,
+      started_at: billing.started_at || profile.subscription_started_at || null,
+      period_ends_at: billing.period_ends_at || profile.subscription_period_ends_at || null,
+      amount_kes: Number.isFinite(billing.amount_kes) ? billing.amount_kes : null,
+      external_reference: billing.external_reference || null,
+      badge_payment_status: billing.badge_payment_status || "not_purchased",
+      badge_amount_kes: Number.isFinite(billing.badge_amount_kes) ? billing.badge_amount_kes : null,
+      badge_provider: billing.badge_provider || null,
+      badge_external_reference: billing.badge_external_reference || null,
+      badge_paid_at: billing.badge_paid_at || null,
+      badge_status: verification.badge_status || "none",
+      badge_approval_status: verification.approval_status || "none",
+      billing_events: billingEvents.filter((event) => event.user_id === profile.id)
+        .sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")))
+        .slice(0, 8),
+    };
+  }).filter((user) => tierFilter === "all" || user.tier === tierFilter)
+    .filter((user) => !query || `${user.handle} ${user.username || ""} ${user.id} ${user.external_reference || ""}`.toLowerCase().includes(query))
+    .sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")));
+  res.json({
+    total: users.length,
+    totals: {
+      basic: profiles.filter((profile) => (billingByUser.get(profile.id)?.tier || profile.subscription_tier || "basic") === "basic").length,
+      premium: profiles.filter((profile) => (billingByUser.get(profile.id)?.tier || profile.subscription_tier || "basic") === "premium").length,
+      gold: profiles.filter((profile) => (billingByUser.get(profile.id)?.tier || profile.subscription_tier || "basic") === "gold").length,
+      paidBadges: billingAccounts.filter((item) => item.badge_payment_status === "paid").length,
+    },
+    users: users.slice(offset, offset + limit),
+  });
+});
+
 app.get("/api/owner/contact", async (_req, res) => {
   const snapshot = await db().collection("site_settings").doc("contact").get();
   res.json({
@@ -363,31 +416,37 @@ const CANDID_USER_ID = "candid-official";
 async function ensureCandidProfile(database) {
   const profileRef = database.collection("profiles").doc(CANDID_USER_ID);
   const profileSnap = await profileRef.get();
-  if (!profileSnap.exists) {
-    const timestamp = new Date().toISOString();
-    await profileRef.set({
-      id: CANDID_USER_ID,
-      handle: "candid",
-      username: "candid",
-      county: null,
-      banned: false,
-      created_at: timestamp,
-      role_label: "Candid team",
-      account_type: "company",
-      onboarded_at: timestamp,
-    });
-    await database.collection("usernames").doc("candid").set({
-      username: "candid", user_id: CANDID_USER_ID, created_at: timestamp,
-    });
-    await database.collection("verifications").doc(CANDID_USER_ID).set({
-      user_id: CANDID_USER_ID,
-      account_type: "company",
-      badge_status: "claimed",
-      owner_verified: true,
-      claimed_at: timestamp,
-      checked_at: timestamp,
-    }, { merge: true });
+  const timestamp = new Date().toISOString();
+  const existingProfile = profileSnap.data() || {};
+  await profileRef.set({
+    id: CANDID_USER_ID,
+    handle: "candid",
+    username: "candid",
+    county: null,
+    banned: false,
+    created_at: existingProfile.created_at || timestamp,
+    role_label: "Candid team",
+    account_type: "company",
+    verified: true,
+    onboarded_at: existingProfile.onboarded_at || timestamp,
+  }, { merge: true });
+  const usernameRef = database.collection("usernames").doc("candid");
+  const usernameSnap = await usernameRef.get();
+  if (!usernameSnap.exists) {
+    await usernameRef.set({ username: "candid", user_id: CANDID_USER_ID, created_at: timestamp });
   }
+  const verificationRef = database.collection("account_verifications").doc(CANDID_USER_ID);
+  const verificationSnap = await verificationRef.get();
+  await verificationRef.set({
+    user_id: CANDID_USER_ID,
+    account_type: "company",
+    badge_status: "claimed",
+    owner_override: "company",
+    owner_verified: true,
+    approval_status: "approved",
+    claimed_at: verificationSnap.data()?.claimed_at || timestamp,
+    checked_at: timestamp,
+  }, { merge: true });
   return profileRef;
 }
 
@@ -459,6 +518,8 @@ app.get("/api/owner/inbox", async (req, res) => {
       last_message_at: item.last_message_at || item.created_at || null,
       unread: item.last_sender === "user" && (!item.staff_read_at || item.staff_read_at < item.last_message_at) ? 1 : 0,
       status: item.status || "open",
+      needs_owner: item.needs_owner === true,
+      escalation_reason: item.escalation_reason || null,
       contact: null,
     };
   });
@@ -558,6 +619,8 @@ app.get("/api/owner/inbox/thread", async (req, res) => {
         subject: `@${profile?.username || "member"}`,
         user_id: conversation.user_id || id,
         status: conversation.status || "open",
+        needs_owner: conversation.needs_owner === true,
+        escalation_reason: conversation.escalation_reason || null,
       },
       messages,
     });
@@ -679,6 +742,9 @@ app.post("/api/owner/inbox/reply", async (req, res) => {
       last_sender: "support",
       staff_read_at: timestamp,
       status: "open",
+      needs_owner: false,
+      escalation_reason: null,
+      owner_replied_at: timestamp,
     }, { merge: true });
     const notificationRef = database.collection("notifications").doc();
     batch.set(notificationRef, {
@@ -710,7 +776,7 @@ app.post("/api/owner/inbox/status", async (req, res) => {
   const ref = db().collection(collectionName).doc(id);
   const snapshot = await ref.get();
   if (!snapshot.exists) return res.status(404).json({ error: "Support thread not found" });
-  await ref.set({ status, updated_at: new Date().toISOString() }, { merge: true });
+  await ref.set({ status, updated_at: new Date().toISOString(), ...(status === "closed" ? { needs_owner: false, escalation_reason: null } : {}) }, { merge: true });
   await audit(kind === "support_chat" ? `support.thread_${status}` : `support.ticket_${status}`, kind === "support_chat" ? "support_conversation" : "support_ticket", id);
   res.json({ ok: true, status });
 });
@@ -793,6 +859,82 @@ app.post("/api/owner/actions", async (req, res) => {
     if (!(await document("profiles", input.id))) return res.status(404).json({ error: "User not found" });
     await database.collection("profiles").doc(input.id).update({ banned: input.banned });
     await audit(input.banned ? "user.banned" : "user.unbanned", "user", input.id);
+  } else if (input.entity === "billing_subscription") {
+    if (!(await document("profiles", input.id))) return res.status(404).json({ error: "User not found" });
+    const tiers = ["basic", "premium", "gold"];
+    const statuses = ["active", "cancelled", "expired", "past_due"];
+    if (!tiers.includes(input.tier) || !statuses.includes(input.status)) return res.status(400).json({ error: "Invalid membership package or status" });
+    for (const field of ["started_at", "period_ends_at", "provider", "external_reference"]) {
+      if (field in input && input[field] !== null && (typeof input[field] !== "string" || input[field].length > 180)) return res.status(400).json({ error: `Invalid ${field}` });
+    }
+    if ("amount_kes" in input && input.amount_kes !== null && (!Number.isInteger(input.amount_kes) || input.amount_kes < 0 || input.amount_kes > 10_000_000)) return res.status(400).json({ error: "Invalid payment amount" });
+    const ref = database.collection("billing_accounts").doc(input.id);
+    const previousSnapshot = await ref.get();
+    const previous = previousSnapshot.data() || {};
+    const patch = {
+      user_id: input.id,
+      tier: input.tier,
+      status: input.status,
+      provider: input.provider ?? null,
+      started_at: input.started_at ?? null,
+      period_ends_at: input.period_ends_at ?? null,
+      amount_kes: input.amount_kes ?? null,
+      external_reference: input.external_reference ?? null,
+      updated_at: timestamp,
+      updated_by: "owner",
+    };
+    const batch = database.batch();
+    batch.set(ref, patch, { merge: true });
+    batch.set(database.collection("profiles").doc(input.id), {
+      subscription_tier: input.tier,
+      subscription_status: input.status,
+      subscription_provider: patch.provider,
+      subscription_started_at: patch.started_at,
+      subscription_period_ends_at: patch.period_ends_at,
+    }, { merge: true });
+    batch.set(database.collection("billing_events").doc(), {
+      user_id: input.id,
+      type: "subscription_admin_update",
+      before: { tier: previous.tier || "basic", status: previous.status || "active" },
+      after: { tier: patch.tier, status: patch.status, amount_kes: patch.amount_kes, provider: patch.provider },
+      created_at: timestamp,
+      created_by: "owner",
+    });
+    await batch.commit();
+    await audit("billing.subscription_updated", "user", input.id, { before: previous.tier || "basic", after: patch });
+  } else if (input.entity === "billing_badge") {
+    if (!(await document("profiles", input.id))) return res.status(404).json({ error: "User not found" });
+    const statuses = ["not_purchased", "pending", "paid", "waived", "refunded"];
+    if (!statuses.includes(input.badge_payment_status)) return res.status(400).json({ error: "Invalid badge payment status" });
+    if ("badge_amount_kes" in input && input.badge_amount_kes !== null && (!Number.isInteger(input.badge_amount_kes) || input.badge_amount_kes < 0 || input.badge_amount_kes > 10_000_000)) return res.status(400).json({ error: "Invalid badge amount" });
+    for (const field of ["badge_provider", "badge_external_reference"]) {
+      if (field in input && input[field] !== null && (typeof input[field] !== "string" || input[field].length > 180)) return res.status(400).json({ error: `Invalid ${field}` });
+    }
+    const ref = database.collection("billing_accounts").doc(input.id);
+    const previousSnapshot = await ref.get();
+    const previous = previousSnapshot.data() || {};
+    const patch = {
+      user_id: input.id,
+      badge_payment_status: input.badge_payment_status,
+      badge_amount_kes: input.badge_amount_kes ?? null,
+      badge_provider: input.badge_provider ?? null,
+      badge_external_reference: input.badge_external_reference ?? null,
+      badge_paid_at: input.badge_payment_status === "paid" ? previous.badge_paid_at || timestamp : null,
+      updated_at: timestamp,
+      updated_by: "owner",
+    };
+    const batch = database.batch();
+    batch.set(ref, patch, { merge: true });
+    batch.set(database.collection("billing_events").doc(), {
+      user_id: input.id,
+      type: "badge_payment_admin_update",
+      before: { badge_payment_status: previous.badge_payment_status || "not_purchased" },
+      after: { badge_payment_status: patch.badge_payment_status, amount_kes: patch.badge_amount_kes, provider: patch.badge_provider },
+      created_at: timestamp,
+      created_by: "owner",
+    });
+    await batch.commit();
+    await audit("billing.badge_payment_updated", "user", input.id, { before: previous.badge_payment_status || "not_purchased", after: patch });
   } else if (input.entity === "account_verification" && ["approved", "declined"].includes(input.status)) {
     const reviewRef = database.collection("account_verification_reviews").doc(input.id);
     const reviewSnapshot = await reviewRef.get();

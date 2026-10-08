@@ -65,6 +65,24 @@ export type OwnerUser = {
   created_at: string;
 };
 
+export type OwnerBillingUser = OwnerUser & {
+  tier: "basic" | "premium" | "gold";
+  status: "active" | "cancelled" | "expired" | "past_due";
+  provider: string | null;
+  started_at: string | null;
+  period_ends_at: string | null;
+  amount_kes: number | null;
+  external_reference: string | null;
+  badge_payment_status: "not_purchased" | "pending" | "paid" | "waived" | "refunded";
+  badge_amount_kes: number | null;
+  badge_provider: string | null;
+  badge_external_reference: string | null;
+  badge_paid_at: string | null;
+  badge_status: string;
+  badge_approval_status: string;
+  billing_events: { id: string; type: string; before?: Record<string, unknown>; after?: Record<string, unknown>; created_at: string }[];
+};
+
 export type OwnerStats = {
   stories: { total: number; published: number; pending: number; hidden: number; last7Days: number };
   companies: number;
@@ -152,6 +170,8 @@ export type OwnerInboxThread = {
   category?: string;
   participants?: InboxParticipant[];
   can_reply_as_candid?: boolean;
+  needs_owner?: boolean;
+  escalation_reason?: string | null;
 };
 
 export type OwnerInboxMessage = {
