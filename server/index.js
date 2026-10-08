@@ -321,14 +321,16 @@ app.get("/api/owner/billing", async (req, res) => {
   const { limit, offset } = pageParams(new URL(req.url, "http://owner.local"));
   const query = String(req.query.q || "").toLowerCase();
   const tierFilter = String(req.query.tier || "all");
-  const [profiles, billingAccounts, verifications, billingEvents] = await Promise.all([
-    collection("profiles"), collection("billing_accounts"), collection("account_verifications"), collection("billing_events"),
+  const [profiles, billingAccounts, billingEvents] = await Promise.all([
+    collection("profiles"), collection("billing_accounts"), collection("billing_events"),
   ]);
   const billingByUser = new Map(billingAccounts.map((item) => [item.user_id || item.id, item]));
-  const verificationByUser = new Map(verifications.map((item) => [item.user_id || item.id, item]));
   const users = profiles.map((profile) => {
     const billing = billingByUser.get(profile.id) || {};
-    const verification = verificationByUser.get(profile.id) || {};
+    const tier = billing.tier || profile.subscription_tier || "basic";
+    const status = billing.status || profile.subscription_status || "active";
+    const periodEnd = billing.period_ends_at || profile.subscription_period_ends_at || null;
+    const badgeActive = status === "active" || (status === "cancelled" && periodEnd && new Date(periodEnd).getTime() > Date.now());
     return {
       id: profile.id,
       handle: profile.handle || "member",
@@ -337,21 +339,15 @@ app.get("/api/owner/billing", async (req, res) => {
       banned: profile.banned === true,
       account_type: profile.account_type || "individual",
       created_at: profile.created_at || null,
-      tier: billing.tier || profile.subscription_tier || "basic",
-      status: billing.status || profile.subscription_status || "active",
+      tier,
+      status,
       provider: billing.provider || profile.subscription_provider || null,
       started_at: billing.started_at || profile.subscription_started_at || null,
-      period_ends_at: billing.period_ends_at || profile.subscription_period_ends_at || null,
+      period_ends_at: periodEnd,
       amount_kes: Number.isFinite(billing.amount_kes) ? billing.amount_kes : null,
       external_reference: billing.external_reference || null,
-      badge_payment_status: billing.badge_payment_status || "not_purchased",
-      badge_amount_kes: Number.isFinite(billing.badge_amount_kes) ? billing.badge_amount_kes : null,
-      badge_provider: billing.badge_provider || null,
-      badge_external_reference: billing.badge_external_reference || null,
-      badge_paid_at: billing.badge_paid_at || null,
-      badge_status: verification.badge_status || "none",
-      badge_approval_status: verification.approval_status || "none",
-      billing_events: billingEvents.filter((event) => event.user_id === profile.id)
+      membership_badge: badgeActive && tier !== "basic" ? tier : "none",
+      billing_events: billingEvents.filter((event) => event.user_id === profile.id && event.type === "subscription_admin_update")
         .sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")))
         .slice(0, 8),
     };
@@ -364,7 +360,6 @@ app.get("/api/owner/billing", async (req, res) => {
       basic: profiles.filter((profile) => (billingByUser.get(profile.id)?.tier || profile.subscription_tier || "basic") === "basic").length,
       premium: profiles.filter((profile) => (billingByUser.get(profile.id)?.tier || profile.subscription_tier || "basic") === "premium").length,
       gold: profiles.filter((profile) => (billingByUser.get(profile.id)?.tier || profile.subscription_tier || "basic") === "gold").length,
-      paidBadges: billingAccounts.filter((item) => item.badge_payment_status === "paid").length,
     },
     users: users.slice(offset, offset + limit),
   });
@@ -902,39 +897,6 @@ app.post("/api/owner/actions", async (req, res) => {
     });
     await batch.commit();
     await audit("billing.subscription_updated", "user", input.id, { before: previous.tier || "basic", after: patch });
-  } else if (input.entity === "billing_badge") {
-    if (!(await document("profiles", input.id))) return res.status(404).json({ error: "User not found" });
-    const statuses = ["not_purchased", "pending", "paid", "waived", "refunded"];
-    if (!statuses.includes(input.badge_payment_status)) return res.status(400).json({ error: "Invalid badge payment status" });
-    if ("badge_amount_kes" in input && input.badge_amount_kes !== null && (!Number.isInteger(input.badge_amount_kes) || input.badge_amount_kes < 0 || input.badge_amount_kes > 10_000_000)) return res.status(400).json({ error: "Invalid badge amount" });
-    for (const field of ["badge_provider", "badge_external_reference"]) {
-      if (field in input && input[field] !== null && (typeof input[field] !== "string" || input[field].length > 180)) return res.status(400).json({ error: `Invalid ${field}` });
-    }
-    const ref = database.collection("billing_accounts").doc(input.id);
-    const previousSnapshot = await ref.get();
-    const previous = previousSnapshot.data() || {};
-    const patch = {
-      user_id: input.id,
-      badge_payment_status: input.badge_payment_status,
-      badge_amount_kes: input.badge_amount_kes ?? null,
-      badge_provider: input.badge_provider ?? null,
-      badge_external_reference: input.badge_external_reference ?? null,
-      badge_paid_at: input.badge_payment_status === "paid" ? previous.badge_paid_at || timestamp : null,
-      updated_at: timestamp,
-      updated_by: "owner",
-    };
-    const batch = database.batch();
-    batch.set(ref, patch, { merge: true });
-    batch.set(database.collection("billing_events").doc(), {
-      user_id: input.id,
-      type: "badge_payment_admin_update",
-      before: { badge_payment_status: previous.badge_payment_status || "not_purchased" },
-      after: { badge_payment_status: patch.badge_payment_status, amount_kes: patch.badge_amount_kes, provider: patch.badge_provider },
-      created_at: timestamp,
-      created_by: "owner",
-    });
-    await batch.commit();
-    await audit("billing.badge_payment_updated", "user", input.id, { before: previous.badge_payment_status || "not_purchased", after: patch });
   } else if (input.entity === "account_verification" && ["approved", "declined"].includes(input.status)) {
     const reviewRef = database.collection("account_verification_reviews").doc(input.id);
     const reviewSnapshot = await reviewRef.get();

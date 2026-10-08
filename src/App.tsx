@@ -5,7 +5,6 @@ import {
   ArrowUpRight,
   BadgeCheck,
   Ban,
-  BadgeDollarSign,
   Building2,
   Check,
   ChevronLeft,
@@ -1669,17 +1668,11 @@ function BillingView({ revision, runAction, busy }: ViewProps) {
     amount_kes: "",
     external_reference: "",
   });
-  const [badge, setBadge] = useState({
-    badge_payment_status: "not_purchased",
-    badge_amount_kes: "",
-    badge_provider: "",
-    badge_external_reference: "",
-  });
   const search = useDebouncedValue(query);
   const path = `/billing?tier=${tier}&limit=${PAGE_SIZE}&offset=${page * PAGE_SIZE}${search ? `&q=${encodeURIComponent(search)}` : ""}`;
   const { data, loading, error } = useOwnerData<{
     total: number;
-    totals: { basic: number; premium: number; gold: number; paidBadges: number };
+    totals: { basic: number; premium: number; gold: number };
     users: OwnerBillingUser[];
   }>(path, revision);
   const people = data?.users ?? [];
@@ -1696,13 +1689,7 @@ function BillingView({ revision, runAction, busy }: ViewProps) {
       amount_kes: selected.amount_kes == null ? "" : String(selected.amount_kes),
       external_reference: selected.external_reference || "",
     });
-    setBadge({
-      badge_payment_status: selected.badge_payment_status,
-      badge_amount_kes: selected.badge_amount_kes == null ? "" : String(selected.badge_amount_kes),
-      badge_provider: selected.badge_provider || "",
-      badge_external_reference: selected.badge_external_reference || "",
-    });
-  }, [selected?.id, selected?.tier, selected?.status, selected?.badge_payment_status, selected?.amount_kes, selected?.badge_amount_kes, selected?.provider, selected?.started_at, selected?.period_ends_at, selected?.external_reference, selected?.badge_provider, selected?.badge_external_reference]);
+  }, [selected?.id, selected?.tier, selected?.status, selected?.amount_kes, selected?.provider, selected?.started_at, selected?.period_ends_at, selected?.external_reference]);
 
   const dateValue = (value: string) => value ? new Date(`${value}T23:59:59.000Z`).toISOString() : null;
   const amountValue = (value: string) => value.trim() ? Number(value) : null;
@@ -1712,14 +1699,14 @@ function BillingView({ revision, runAction, busy }: ViewProps) {
       <PageHeading
         eyebrow="REVENUE / MEMBERSHIPS"
         title="Billing & entitlements"
-        description="Track package assignments and badge payments. No payments are processed yet; Basic is the default for everyone."
+        description="Manage each account’s package and included benefits. Premium and Gold include a membership badge for individual and company accounts. No payments are processed yet; Basic is the default for everyone."
       />
       <div className="billing-summary-grid">
         {([
           ["Basic", data?.totals.basic ?? 0, "Free"],
           ["Premium", data?.totals.premium ?? 0, "KSh 500 / month"],
           ["Gold", data?.totals.gold ?? 0, "KSh 1,000 / month"],
-          ["Paid badges", data?.totals.paidBadges ?? 0, "Owner-recorded payments"],
+          ["Included badges", (data?.totals.premium ?? 0) + (data?.totals.gold ?? 0), "Premium and Gold packages"],
         ] as const).map(([label, count, detail]) => (
           <article className="surface-panel billing-summary-card" key={label}>
             <span>{label}</span><strong>{count}</strong><small>{detail}</small>
@@ -1743,7 +1730,7 @@ function BillingView({ revision, runAction, busy }: ViewProps) {
                 <span className="record-row-main">
                   <span className="record-title">{person.username ? `@${person.username}` : person.handle}</span>
                   <span className="record-subtitle">{person.tier} · {person.status} · {person.account_type || "Member"}</span>
-                  <span className="record-excerpt">Badge payment: {person.badge_payment_status.replaceAll("_", " ")}</span>
+                  <span className="record-excerpt">{person.membership_badge === "none" ? "No membership badge included" : `${person.membership_badge === "gold" ? "Gold" : "Premium"} member badge included`}</span>
                 </span>
                 {person.tier !== "basic" ? <StatusBadge value={person.tier} /> : null}
               </button>
@@ -1758,6 +1745,7 @@ function BillingView({ revision, runAction, busy }: ViewProps) {
             <div className="billing-owner-form">
               <h3><CreditCard size={16} /> Membership package</h3>
               <label className="form-field"><span>Package</span><select className="select-control" value={subscription.tier} onChange={(event) => setSubscription({ ...subscription, tier: event.target.value })}><option value="basic">Basic · Free</option><option value="premium">Premium · KSh 500 / month</option><option value="gold">Gold · KSh 1,000 / month</option></select></label>
+              <p className="hint-text">{subscription.tier === "gold" ? "Gold member badge is included automatically." : subscription.tier === "premium" ? "Premium member badge is included automatically." : "Basic has no membership badge."} This package applies to individual and company accounts.</p>
               <label className="form-field"><span>Status</span><select className="select-control" value={subscription.status} onChange={(event) => setSubscription({ ...subscription, status: event.target.value })}><option value="active">Active</option><option value="cancelled">Cancelled</option><option value="expired">Expired</option><option value="past_due">Past due</option></select></label>
               <div className="billing-fields-two">
                 <label className="form-field"><span>Started</span><input className="input-control" type="date" value={subscription.started_at} onChange={(event) => setSubscription({ ...subscription, started_at: event.target.value })} /></label>
@@ -1775,27 +1763,11 @@ function BillingView({ revision, runAction, busy }: ViewProps) {
                 external_reference: subscription.external_reference.trim() || null,
               })}><Check size={15} /> Save package record</button>
             </div>
-            <div className="billing-owner-form">
-              <h3><BadgeDollarSign size={16} /> Verification badge payment</h3>
-              <div className="billing-badge-status"><span>Verification approval</span><strong>{selected.badge_approval_status.replaceAll("_", " ")} · badge {selected.badge_status}</strong></div>
-              <label className="form-field"><span>Payment status</span><select className="select-control" value={badge.badge_payment_status} onChange={(event) => setBadge({ ...badge, badge_payment_status: event.target.value })}><option value="not_purchased">Not purchased</option><option value="pending">Payment pending</option><option value="paid">Paid</option><option value="waived">Waived by owner</option><option value="refunded">Refunded</option></select></label>
-              <div className="billing-fields-two">
-                <label className="form-field"><span>Amount (KSh)</span><input className="input-control" type="number" min="0" step="1" value={badge.badge_amount_kes} onChange={(event) => setBadge({ ...badge, badge_amount_kes: event.target.value })} placeholder="Set when pricing is decided" /></label>
-                <label className="form-field"><span>Payment provider</span><input className="input-control" value={badge.badge_provider} onChange={(event) => setBadge({ ...badge, badge_provider: event.target.value })} placeholder="e.g. M-Pesa" /></label>
-              </div>
-              <label className="form-field"><span>Payment reference</span><input className="input-control" value={badge.badge_external_reference} onChange={(event) => setBadge({ ...badge, badge_external_reference: event.target.value })} placeholder="Optional transaction reference" /></label>
-              <button className="secondary-button wide-button" disabled={busy} onClick={() => void runAction({
-                entity: "billing_badge", id: selected.id, badge_payment_status: badge.badge_payment_status,
-                badge_amount_kes: amountValue(badge.badge_amount_kes), badge_provider: badge.badge_provider.trim() || null,
-                badge_external_reference: badge.badge_external_reference.trim() || null,
-              })}><Check size={15} /> Save badge payment</button>
-              <p className="hint-text">Badge payment and badge approval are tracked separately. This records owner-confirmed payment details; it does not process charges.</p>
-            </div>
             <div className="billing-history">
               <h3>Recent billing changes</h3>
               {selected.billing_events.length ? selected.billing_events.map((event) => (
                 <div className="billing-history-row" key={event.id}>
-                  <span>{event.type === "badge_payment_admin_update" ? "Badge payment updated" : "Membership updated"}</span>
+                  <span>Membership package updated</span>
                   <small>{formatDateTime(event.created_at)}</small>
                 </div>
               )) : <p className="hint-text">No billing changes recorded.</p>}

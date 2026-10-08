@@ -73,13 +73,7 @@ export type OwnerBillingUser = OwnerUser & {
   period_ends_at: string | null;
   amount_kes: number | null;
   external_reference: string | null;
-  badge_payment_status: "not_purchased" | "pending" | "paid" | "waived" | "refunded";
-  badge_amount_kes: number | null;
-  badge_provider: string | null;
-  badge_external_reference: string | null;
-  badge_paid_at: string | null;
-  badge_status: string;
-  badge_approval_status: string;
+  membership_badge: "none" | "premium" | "gold";
   billing_events: { id: string; type: string; before?: Record<string, unknown>; after?: Record<string, unknown>; created_at: string }[];
 };
 
