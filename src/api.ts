@@ -68,14 +68,30 @@ export type OwnerUser = {
 
 export type OwnerBillingUser = OwnerUser & {
   tier: "basic" | "premium" | "gold";
+  effective_tier: "basic" | "premium" | "gold";
   status: "active" | "cancelled" | "expired" | "past_due";
+  source: "default" | "complimentary" | "manual" | "paid";
+  version: number;
+  pending_changes: { tier: string; effective_at: string | null }[];
+  assigned_by: string | null;
+  assigned_at: string | null;
   provider: string | null;
   started_at: string | null;
   period_ends_at: string | null;
   amount_kes: number | null;
   external_reference: string | null;
   membership_badge: "none" | "premium" | "gold";
-  billing_events: { id: string; type: string; before?: Record<string, unknown>; after?: Record<string, unknown>; created_at: string }[];
+  billing_events: {
+    id: string;
+    from_tier?: string;
+    to_tier?: string;
+    source?: string;
+    initiated_by?: string;
+    initiated_by_type?: string;
+    reason?: string | null;
+    payment_processed?: boolean;
+    created_at: string;
+  }[];
 };
 
 export type OwnerStats = {

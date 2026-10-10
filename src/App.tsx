@@ -1678,15 +1678,7 @@ function BillingView({ revision, runAction, busy }: ViewProps) {
   const [query, setQuery] = useState("");
   const [tier, setTier] = useState<"all" | "basic" | "premium" | "gold">("all");
   const [selectedId, setSelectedId] = useState("");
-  const [subscription, setSubscription] = useState({
-    tier: "basic",
-    status: "active",
-    provider: "",
-    started_at: "",
-    period_ends_at: "",
-    amount_kes: "",
-    external_reference: "",
-  });
+  const [subscription, setSubscription] = useState({ tier: "basic", reason: "" });
   const search = useDebouncedValue(query);
   const path = `/billing?tier=${tier}&limit=${PAGE_SIZE}&offset=${page * PAGE_SIZE}${search ? `&q=${encodeURIComponent(search)}` : ""}`;
   const { data, loading, error } = useOwnerData<{
@@ -1699,32 +1691,29 @@ function BillingView({ revision, runAction, busy }: ViewProps) {
   useEffect(() => { setPage(0); }, [search, tier]);
   useEffect(() => {
     if (!selected) return;
-    setSubscription({
-      tier: selected.tier,
-      status: selected.status,
-      provider: selected.provider || "",
-      started_at: selected.started_at?.slice(0, 10) || "",
-      period_ends_at: selected.period_ends_at?.slice(0, 10) || "",
-      amount_kes: selected.amount_kes == null ? "" : String(selected.amount_kes),
-      external_reference: selected.external_reference || "",
-    });
-  }, [selected?.id, selected?.tier, selected?.status, selected?.amount_kes, selected?.provider, selected?.started_at, selected?.period_ends_at, selected?.external_reference]);
+    setSubscription({ tier: selected.tier, reason: "" });
+  }, [selected?.id, selected?.tier, selected?.version]);
 
-  const dateValue = (value: string) => value ? new Date(`${value}T23:59:59.000Z`).toISOString() : null;
-  const amountValue = (value: string) => value.trim() ? Number(value) : null;
+  const packageName = (value: string) => value[0]?.toUpperCase() + value.slice(1);
+  const sourceLabel = (source: OwnerBillingUser["source"]) => ({
+    default: "Default Basic",
+    complimentary: "Complimentary owner grant",
+    manual: "Manually assigned",
+    paid: "Paid subscription (verified source)",
+  })[source];
 
   return (
     <>
       <PageHeading
         eyebrow="REVENUE / MEMBERSHIPS"
         title="Billing & entitlements"
-        description="Manage each account’s package and included benefits. Premium and Gold include a membership badge for individual and company accounts. No payments are processed yet; Basic is the default for everyone."
+        description="Review effective packages and assign immediate complimentary access. Listed prices are not charged; payment and renewal processing are not connected."
       />
       <div className="billing-summary-grid">
         {([
           ["Basic", data?.totals.basic ?? 0, "Free"],
-          ["Premium", data?.totals.premium ?? 0, "KSh 500 / month"],
-          ["Gold", data?.totals.gold ?? 0, "KSh 1,000 / month"],
+          ["Premium", data?.totals.premium ?? 0, "Listed rate · KSh 500 / month"],
+          ["Gold", data?.totals.gold ?? 0, "Listed rate · KSh 1,000 / month"],
           ["Included badges", (data?.totals.premium ?? 0) + (data?.totals.gold ?? 0), "Premium and Gold packages"],
         ] as const).map(([label, count, detail]) => (
           <article className="surface-panel billing-summary-card" key={label}>
@@ -1748,10 +1737,10 @@ function BillingView({ revision, runAction, busy }: ViewProps) {
                 <span className="avatar-small">{(person.username || person.handle || "U").slice(0, 1).toUpperCase()}</span>
                 <span className="record-row-main">
                   <span className="record-title">{person.username ? `@${person.username}` : person.handle}</span>
-                  <span className="record-subtitle">{person.tier} · {person.status} · {person.account_type || "Member"}</span>
-                  <span className="record-excerpt">{person.membership_badge === "none" ? "No membership badge included" : `${person.membership_badge === "gold" ? "Gold" : "Premium"} member badge included`}</span>
+                  <span className="record-subtitle">{person.effective_tier} effective · {person.status} · {person.account_type || "Member"}</span>
+                  <span className="record-excerpt">{sourceLabel(person.source)}</span>
                 </span>
-                {person.tier !== "basic" ? <StatusBadge value={person.tier} /> : null}
+                {person.effective_tier !== "basic" ? <StatusBadge value={person.effective_tier} /> : null}
               </button>
             )) : <EmptyState title="No accounts found" detail="Try another package or search term." />}
           </section>
@@ -1763,33 +1752,25 @@ function BillingView({ revision, runAction, busy }: ViewProps) {
             <div className="profile-summary"><span className="profile-avatar">{(selected.username || selected.handle || "U").slice(0, 1).toUpperCase()}</span><div><h2>{selected.username ? `@${selected.username}` : selected.handle}</h2><p className="inspector-meta">{selected.account_type || "Member"} · {selected.county || "County not set"}</p></div></div>
             <div className="billing-owner-form">
               <h3><CreditCard size={16} /> Membership package</h3>
-              <label className="form-field"><span>Package</span><select className="select-control" value={subscription.tier} onChange={(event) => setSubscription({ ...subscription, tier: event.target.value })}><option value="basic">Basic · Free</option><option value="premium">Premium · KSh 500 / month</option><option value="gold">Gold · KSh 1,000 / month</option></select></label>
-              <p className="hint-text">{subscription.tier === "gold" ? "Gold member badge is included automatically." : subscription.tier === "premium" ? "Premium member badge is included automatically." : "Basic has no membership badge."} This package applies to individual and company accounts.</p>
-              <label className="form-field"><span>Status</span><select className="select-control" value={subscription.status} onChange={(event) => setSubscription({ ...subscription, status: event.target.value })}><option value="active">Active</option><option value="cancelled">Cancelled</option><option value="expired">Expired</option><option value="past_due">Past due</option></select></label>
-              <div className="billing-fields-two">
-                <label className="form-field"><span>Started</span><input className="input-control" type="date" value={subscription.started_at} onChange={(event) => setSubscription({ ...subscription, started_at: event.target.value })} /></label>
-                <label className="form-field"><span>Period ends</span><input className="input-control" type="date" value={subscription.period_ends_at} onChange={(event) => setSubscription({ ...subscription, period_ends_at: event.target.value })} /></label>
-              </div>
-              <div className="billing-fields-two">
-                <label className="form-field"><span>Amount paid (KSh)</span><input className="input-control" type="number" min="0" step="1" value={subscription.amount_kes} onChange={(event) => setSubscription({ ...subscription, amount_kes: event.target.value })} placeholder="Not recorded" /></label>
-                <label className="form-field"><span>Payment provider</span><input className="input-control" value={subscription.provider} onChange={(event) => setSubscription({ ...subscription, provider: event.target.value })} placeholder="e.g. M-Pesa" /></label>
-              </div>
-              <label className="form-field"><span>Payment reference</span><input className="input-control" value={subscription.external_reference} onChange={(event) => setSubscription({ ...subscription, external_reference: event.target.value })} placeholder="Optional transaction reference" /></label>
-              <button className="primary-button wide-button" disabled={busy} onClick={() => void runAction({
-                entity: "billing_subscription", id: selected.id, tier: subscription.tier, status: subscription.status,
-                provider: subscription.provider.trim() || null, started_at: dateValue(subscription.started_at),
-                period_ends_at: dateValue(subscription.period_ends_at), amount_kes: amountValue(subscription.amount_kes),
-                external_reference: subscription.external_reference.trim() || null,
-              })}><Check size={15} /> Save package record</button>
+              <p className="hint-text">Effective package: <strong>{packageName(selected.effective_tier)}</strong> · {sourceLabel(selected.source)}</p>
+              <p className="hint-text">{selected.source === "paid" ? "This account is marked as paid by a verified billing integration." : "No payment has been processed. Any package change made here is an immediate complimentary owner assignment."}</p>
+              <label className="form-field"><span>Assign package</span><select className="select-control" value={subscription.tier} onChange={(event) => setSubscription({ ...subscription, tier: event.target.value })}><option value="basic">Basic · Free</option><option value="premium">Premium · listed KSh 500 / month</option><option value="gold">Gold · listed KSh 1,000 / month</option></select></label>
+              <p className="hint-text">{subscription.tier === "gold" ? "Gold membership badge included." : subscription.tier === "premium" ? "Premium membership badge included." : "No membership badge on Basic."} Changes apply immediately. User content and usage history are preserved.</p>
+              <label className="form-field"><span>Admin note (optional)</span><input className="input-control" maxLength={500} value={subscription.reason} onChange={(event) => setSubscription({ ...subscription, reason: event.target.value })} placeholder="Reason for this package assignment" /></label>
+              <button className="primary-button wide-button" disabled={busy || (subscription.tier === selected.tier && selected.status === "active")} onClick={() => void runAction({
+                entity: "billing_subscription", id: selected.id, tier: subscription.tier,
+                expected_version: selected.version, reason: subscription.reason.trim() || null,
+              })}><Check size={15} /> Assign package</button>
+              <p className="hint-text">Package version {selected.version} · {selected.pending_changes.length ? "A package change is pending." : "No pending package change."}</p>
             </div>
             <div className="billing-history">
-              <h3>Recent billing changes</h3>
+              <h3>Package change history</h3>
               {selected.billing_events.length ? selected.billing_events.map((event) => (
                 <div className="billing-history-row" key={event.id}>
-                  <span>Membership package updated</span>
-                  <small>{formatDateTime(event.created_at)}</small>
+                  <span>{packageName(event.from_tier || "basic")} → {packageName(event.to_tier || "basic")} · {event.initiated_by_type === "owner_admin" ? "Owner assignment" : "Member switch"}</span>
+                  <small>{event.initiated_by || "Member"} · {formatDateTime(event.created_at)}</small>
                 </div>
-              )) : <p className="hint-text">No billing changes recorded.</p>}
+              )) : <p className="hint-text">No package changes recorded.</p>}
             </div>
           </aside>
         ) : null}

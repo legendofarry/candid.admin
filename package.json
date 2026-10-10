@@ -11,7 +11,8 @@
     "build": "tsc -b && vite build",
     "start": "node server/index.js",
     "preview": "npm run start",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --test server/*.test.js"
   },
   "dependencies": {
     "cloudinary": "^2.11.0",

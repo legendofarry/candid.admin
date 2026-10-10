@@ -6,6 +6,7 @@ import express from "express";
 import { v2 as cloudinary } from "cloudinary";
 import { cert, getApps, initializeApp } from "firebase-admin/app";
 import { FieldValue, getFirestore } from "firebase-admin/firestore";
+import { makeManualPackageChange, normalizeMembership, validateAdminPackageChange } from "./membership-policy.js";
 
 dotenv.config({ path: resolve(process.cwd(), ".env.local") });
 
@@ -69,7 +70,14 @@ async function document(name, id) {
   return snapshot.exists ? { ...snapshot.data(), id: snapshot.id } : null;
 }
 
-async function audit(action, targetType = null, targetId = null, payload = null) {
+function ownerActor(req) {
+  const id = String(req.get("x-candid-owner-id") || "").trim();
+  const email = String(req.get("x-candid-owner-email") || "").trim().toLowerCase();
+  if (process.env.NETLIFY === "true" && (!id || !email)) return null;
+  return { id: id || "local-owner", email: email || process.env.OWNER_ADMIN_ACTOR || "local owner" };
+}
+
+async function audit(action, targetType = null, targetId = null, payload = null, actor = null) {
   const ref = db().collection("owner_audit_log").doc();
   await ref.set({
     id: ref.id,
@@ -78,6 +86,7 @@ async function audit(action, targetType = null, targetId = null, payload = null)
     target_id: targetId,
     payload,
     created_at: new Date().toISOString(),
+    ...(actor ? { actor_id: actor.id, actor_email: actor.email } : {}),
   });
 }
 
@@ -321,16 +330,28 @@ app.get("/api/owner/billing", async (req, res) => {
   const { limit, offset } = pageParams(new URL(req.url, "http://owner.local"));
   const query = String(req.query.q || "").toLowerCase();
   const tierFilter = String(req.query.tier || "all");
-  const [profiles, billingAccounts, billingEvents] = await Promise.all([
-    collection("profiles"), collection("billing_accounts"), collection("billing_events"),
+  const [profiles, changeEvents, legacyBillingEvents] = await Promise.all([
+    collection("profiles"), collection("subscription_change_events"), collection("billing_events"),
   ]);
-  const billingByUser = new Map(billingAccounts.map((item) => [item.user_id || item.id, item]));
   const users = profiles.map((profile) => {
-    const billing = billingByUser.get(profile.id) || {};
-    const tier = billing.tier || profile.subscription_tier || "basic";
-    const status = billing.status || profile.subscription_status || "active";
-    const periodEnd = billing.period_ends_at || profile.subscription_period_ends_at || null;
-    const badgeActive = status === "active" || (status === "cancelled" && periodEnd && new Date(periodEnd).getTime() > Date.now());
+    const membership = normalizeMembership(profile);
+    const history = changeEvents
+      .filter((event) => event.user_id === profile.id)
+      .concat(legacyBillingEvents
+        .filter((event) => event.user_id === profile.id && event.type === "subscription_admin_update")
+        .map((event) => ({
+          id: event.id,
+          from_tier: event.before?.tier || "basic",
+          to_tier: event.after?.tier || "basic",
+          source: "manual",
+          initiated_by: "Legacy owner record",
+          initiated_by_type: "owner_admin",
+          reason: null,
+          payment_processed: false,
+          created_at: event.created_at,
+        })))
+      .sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")))
+      .slice(0, 12);
     return {
       id: profile.id,
       handle: profile.handle || "member",
@@ -339,27 +360,31 @@ app.get("/api/owner/billing", async (req, res) => {
       banned: profile.banned === true,
       account_type: profile.account_type || "individual",
       created_at: profile.created_at || null,
-      tier,
-      status,
-      provider: billing.provider || profile.subscription_provider || null,
-      started_at: billing.started_at || profile.subscription_started_at || null,
-      period_ends_at: periodEnd,
-      amount_kes: Number.isFinite(billing.amount_kes) ? billing.amount_kes : null,
-      external_reference: billing.external_reference || null,
-      membership_badge: badgeActive && tier !== "basic" ? tier : "none",
-      billing_events: billingEvents.filter((event) => event.user_id === profile.id && event.type === "subscription_admin_update")
-        .sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")))
-        .slice(0, 8),
+      tier: membership.tier,
+      effective_tier: membership.effective_tier,
+      status: membership.status,
+      source: membership.source,
+      provider: membership.provider,
+      started_at: membership.started_at,
+      period_ends_at: membership.period_ends_at,
+      amount_kes: null,
+      external_reference: null,
+      version: membership.version,
+      pending_changes: [],
+      assigned_by: profile.subscription_assigned_by || null,
+      assigned_at: profile.subscription_assigned_at || null,
+      membership_badge: membership.effective_tier === "premium" || membership.effective_tier === "gold" ? membership.effective_tier : "none",
+      billing_events: history,
     };
   }).filter((user) => tierFilter === "all" || user.tier === tierFilter)
-    .filter((user) => !query || `${user.handle} ${user.username || ""} ${user.id} ${user.external_reference || ""}`.toLowerCase().includes(query))
+    .filter((user) => !query || `${user.handle} ${user.username || ""} ${user.id}`.toLowerCase().includes(query))
     .sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")));
   res.json({
     total: users.length,
     totals: {
-      basic: profiles.filter((profile) => (billingByUser.get(profile.id)?.tier || profile.subscription_tier || "basic") === "basic").length,
-      premium: profiles.filter((profile) => (billingByUser.get(profile.id)?.tier || profile.subscription_tier || "basic") === "premium").length,
-      gold: profiles.filter((profile) => (billingByUser.get(profile.id)?.tier || profile.subscription_tier || "basic") === "gold").length,
+      basic: users.filter((user) => user.tier === "basic").length,
+      premium: users.filter((user) => user.tier === "premium").length,
+      gold: users.filter((user) => user.tier === "gold").length,
     },
     users: users.slice(offset, offset + limit),
   });
@@ -866,48 +891,56 @@ app.post("/api/owner/actions", async (req, res) => {
     await ref.update({ investigation_hold: nextHold });
     await audit(input.active ? "user.investigation_hold_started" : "user.investigation_hold_ended", "user", input.id);
   } else if (input.entity === "billing_subscription") {
-    if (!(await document("profiles", input.id))) return res.status(404).json({ error: "User not found" });
-    const tiers = ["basic", "premium", "gold"];
-    const statuses = ["active", "cancelled", "expired", "past_due"];
-    if (!tiers.includes(input.tier) || !statuses.includes(input.status)) return res.status(400).json({ error: "Invalid membership package or status" });
-    for (const field of ["started_at", "period_ends_at", "provider", "external_reference"]) {
-      if (field in input && input[field] !== null && (typeof input[field] !== "string" || input[field].length > 180)) return res.status(400).json({ error: `Invalid ${field}` });
+    const actor = ownerActor(req);
+    if (!actor) return res.status(403).json({ error: "An authenticated owner administrator is required." });
+    if (!input || typeof input.id !== "string" || !input.id || input.id.length > 180 || input.id.includes("/")) {
+      return res.status(400).json({ error: "Invalid user id" });
     }
-    if ("amount_kes" in input && input.amount_kes !== null && (!Number.isInteger(input.amount_kes) || input.amount_kes < 0 || input.amount_kes > 10_000_000)) return res.status(400).json({ error: "Invalid payment amount" });
-    const ref = database.collection("billing_accounts").doc(input.id);
-    const previousSnapshot = await ref.get();
-    const previous = previousSnapshot.data() || {};
-    const patch = {
-      user_id: input.id,
-      tier: input.tier,
-      status: input.status,
-      provider: input.provider ?? null,
-      started_at: input.started_at ?? null,
-      period_ends_at: input.period_ends_at ?? null,
-      amount_kes: input.amount_kes ?? null,
-      external_reference: input.external_reference ?? null,
-      updated_at: timestamp,
-      updated_by: "owner",
-    };
-    const batch = database.batch();
-    batch.set(ref, patch, { merge: true });
-    batch.set(database.collection("profiles").doc(input.id), {
-      subscription_tier: input.tier,
-      subscription_status: input.status,
-      subscription_provider: patch.provider,
-      subscription_started_at: patch.started_at,
-      subscription_period_ends_at: patch.period_ends_at,
-    }, { merge: true });
-    batch.set(database.collection("billing_events").doc(), {
-      user_id: input.id,
-      type: "subscription_admin_update",
-      before: { tier: previous.tier || "basic", status: previous.status || "active" },
-      after: { tier: patch.tier, status: patch.status, amount_kes: patch.amount_kes, provider: patch.provider },
-      created_at: timestamp,
-      created_by: "owner",
-    });
-    await batch.commit();
-    await audit("billing.subscription_updated", "user", input.id, { before: previous.tier || "basic", after: patch });
+    if (typeof input.reason === "string" && input.reason.length > 500) {
+      return res.status(400).json({ error: "Reason must be 500 characters or fewer" });
+    }
+    const profileRef = database.collection("profiles").doc(input.id);
+    const changeId = crypto.randomUUID();
+    const timestamp = new Date().toISOString();
+    let outcome;
+    try {
+      outcome = await database.runTransaction(async (transaction) => {
+        const snapshot = await transaction.get(profileRef);
+        if (!snapshot.exists) return { status: 404, body: { error: "User not found" } };
+        const profile = { ...snapshot.data(), id: snapshot.id };
+        const validation = validateAdminPackageChange(input, profile);
+        if (!validation.ok) return { status: validation.status, body: { error: validation.error } };
+        const change = makeManualPackageChange({
+          profile,
+          tier: input.tier,
+          actor,
+          reason: typeof input.reason === "string" ? input.reason.trim() || null : null,
+          now: timestamp,
+          changeId,
+        });
+        if (!change.changed) return { status: 200, body: { ok: true, changed: false, membership: validation.membership } };
+
+        const eventRef = database.collection("subscription_change_events").doc(changeId);
+        const auditRef = database.collection("owner_audit_log").doc();
+        transaction.update(profileRef, change.patch);
+        transaction.create(eventRef, change.event);
+        transaction.create(auditRef, {
+          id: auditRef.id,
+          action: "billing.subscription_updated",
+          target_type: "user",
+          target_id: input.id,
+          payload: { from_tier: change.event.from_tier, to_tier: change.event.to_tier, source: change.event.source, reason: change.event.reason },
+          actor_id: actor.id,
+          actor_email: actor.email,
+          created_at: timestamp,
+        });
+        return { status: 200, body: { ok: true, changed: true, membership: { tier: input.tier, effective_tier: input.tier, status: "active", source: change.patch.subscription_source, version: change.patch.subscription_version } } };
+      });
+    } catch (error) {
+      if (error?.code === 10 || error?.code === 6) return res.status(409).json({ error: "A package change is already being processed. Refresh and try again." });
+      throw error;
+    }
+    return res.status(outcome.status).json(outcome.body);
   } else if (input.entity === "account_verification" && ["approved", "declined"].includes(input.status)) {
     const reviewRef = database.collection("account_verification_reviews").doc(input.id);
     const reviewSnapshot = await reviewRef.get();
